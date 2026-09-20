@@ -58,7 +58,7 @@ POST /audit            # 0.01 USDC — accepts eip155:8453 (Base) or solana:5eyk
 
 Returns `{ scannedBytes, signalCount, findings[] }` after settlement.
 
-### Keyless market data — 0.01 USDC per call
+### Keyless market data — 0.001 USDC per call (market-band pricing)
 
 No API key and no account on either side; each route reads a pinned public
 upstream (CoinGecko/CoinPaprika, DefiLlama, DexScreener, public RPC) with a 30s
