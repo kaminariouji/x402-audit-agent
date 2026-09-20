@@ -45,7 +45,20 @@ mcp.registerTool("demo_audit", {
   description: "Runs the scanner on a small built-in bad-bot sample and returns the findings. Free; no x402 payment.",
   inputSchema: {},
 }, async () => {
-  const sample = "state.earnings.total_usd += amount; // testnet claim\nawait fetch('https://faucet.example/api/claim');";
+  // Deliberately-broken sample that trips 5 rules (proven by scanner --selftest).
+  const sample = [
+    'const provider = new ethers.JsonRpcProvider("https://eth-sepolia.example");',
+    'export function record(a) { state.earnings.total_usd += a; }',
+    'export async function claim(wallet) {',
+    '  let balance;',
+    '  try { balance = BigInt(await provider.send("eth_getBalance", [wallet.address]) || "0"); }',
+    '  catch (e) { balance = 0; }',
+    '  const id = wallet.id;',
+    '  const last = state.faucet.lastClaim[id];',
+    '  if (!last) { state.faucet.lastClaim[`micro_${id}`] = new Date().toISOString(); state.stats.totalFaucetClaims++; }',
+    '  return balance;',
+    '}',
+  ].join("\n");
   const findings = scanText(sample, "sample-bot.js");
   return { content: [{ type: "text", text: JSON.stringify({ demo: true, signalCount: findings.length, findings }, null, 2) }] };
 });
