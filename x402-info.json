@@ -1,0 +1,17 @@
+{
+  "name": "crypto-bot-honesty-audit",
+  "description": "Paid x402 agent (HTTP + MCP): scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
+  "payTo": "0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b",
+  "network": "eip155:8453",
+  "currency": "USDC",
+  "price": "0.05",
+  "facilitator": "https://facilitator.payai.network",
+  "liveEndpoints": {
+    "audit_POST": "https://labored-safari-islamic.ngrok-free.dev/audit",
+    "mcp_POST": "https://labored-safari-islamic.ngrok-free.dev/mcp",
+    "x402_info": "https://labored-safari-islamic.ngrok-free.dev/.well-known/x402-info",
+    "llms": "https://labored-safari-islamic.ngrok-free.dev/llms.txt"
+  },
+  "source": "https://github.com/kaminariouji/x402-audit-agent",
+  "note": "This is a durable, crawler-readable mirror of the service terms on github.io. Live compute + x402 settlement run at the ngrok URLs above."
+}
