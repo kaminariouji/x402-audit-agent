@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crypto-bot-honesty-audit — paid x402 agent</title>
+<meta name="description" content="Pay-per-call x402 agent that scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned. 0.05 USDC on Base.">
+</head>
+<body style="font-family:system-ui,sans-serif;max-width:52rem;margin:2rem auto;padding:0 1rem;line-height:1.55">
+<h1>crypto-bot-honesty-audit</h1>
+<p>A self-revenue <strong>x402</strong> service: exposes a paid HTTP API (<code>POST /audit</code>) and an MCP tool (<code>audit_bot_code</code>) that scans a JS/TS crypto-bot source file for the bug patterns that make a bot report income it never earned — testnet tokens counted as USD, silent-zero balances from failed RPC, cooldown key mismatches, non-existent faucet endpoints, and attempts counted as results. Payments are 0.05 USDC on Base (<code>eip155:8453</code>) via HTTP&nbsp;402, settling directly to the seller wallet with no human in the loop.</p>
+<h2>Live endpoints</h2>
+<ul>
+<li>Unpaid <code>POST /audit</code> returns HTTP 402 with x402 payment terms.</li>
+<li>Discovery: <code>/.well-known/x402-info</code>, <code>/llms.txt</code>, <code>/openapi.json</code> on the live host.</li>
+<li>Metadata mirror: <a href="./x402-info.json"><code>x402-info.json</code></a> (this page is the durable github.io mirror; compute + settlement run on the live host).</li>
+<li>Source: <a href="https://github.com/kaminariouji/x402-audit-agent">github.com/kaminariouji/x402-audit-agent</a></li>
+<li>Merchant listing: <a href="https://www.x402scan.com/server/6f86e2b0-87d0-4805-bfd9-7b69be3e1b1d">x402scan server page</a></li>
+</ul>
+<p><small>Recipient wallet: <code>0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b</code>. Facilitator: <code>facilitator.payai.network</code>. No signup, no API key — your x402 client pays the 402 and retries.</small></p>
+</body></html>
