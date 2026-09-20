@@ -22,6 +22,8 @@ const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || "https://facilitator
 const NETWORK = process.env.X402_NETWORK || "eip155:8453";
 const PRICE = process.env.X402_PRICE || "$0.05";
 const PORT = Number(process.env.PORT || 10000); // Render injects PORT
+// Public origin used in discovery metadata (OpenAPI servers, x402 resource fan-out).
+const PUBLIC_URL = (process.env.X402_PUBLIC_URL || "https://labored-safari-islamic.ngrok-free.dev").replace(/\/+$/, "");
 
 const FREE_METHODS = new Set(["initialize", "notifications/initialized", "ping", "tools/list", "resources/list", "prompts/list"]);
 const FREE_TOOLS = new Set(["demo_audit"]);
@@ -122,7 +124,15 @@ app.get("/audit", (_req, res) => res.status(405).json({
   error: "method_not_allowed", paid_endpoint: "POST /audit", price: PRICE, network: NETWORK, currency: "USDC", payTo: PAY_TO,
   probe: "this service is LIVE; send POST with an x402 payment to use it",
 }));
-app.get(["/.well-known/x402.json", "/.well-known/x402"], (_req, res) => res.redirect(301, "/.well-known/x402-info"));
+// x402scan / Bazaar fan-out compat: list payable resources at their absolute URLs.
+app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
+  res.json({
+    version: 1,
+    resources: [`${PUBLIC_URL}/audit`],
+    ownershipProofs: [PAY_TO],
+    instructions: "Pay-per-call x402 USDC on Base. POST /audit with an x402 payment; MCP tool audit_bot_code on POST /mcp.",
+  });
+});
 app.get("/.well-known/x402-info", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
   description: "Paid x402 agent (HTTP + MCP): scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned (testnet-as-USD, fake faucet endpoints, hardcoded earnings, auto-settled claim stubs).",
@@ -138,12 +148,19 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
 }));
 app.get("/openapi.json", (_req, res) => res.json({
   openapi: "3.0.0",
-  info: { title: "crypto-bot-honesty-audit", version: "1.0.0",
-    description: "Pay-per-call x402 agent: scans one JS/TS crypto-bot source file for the bug patterns that make it report income it never earned." },
-  servers: [{ url: "https://github.com/kaminariouji/x402-audit-agent" }],
+  info: {
+    title: "crypto-bot-honesty-audit", version: "1.0.0",
+    description: "Pay-per-call x402 agent: scans one JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
+    contact: { url: "https://github.com/kaminariouji/x402-audit-agent" },
+    "x-guidance": "Send POST /audit with body { code, filename }. Unpaid -> HTTP 402 with x402 terms; pay 0.05 USDC on Base (eip155:8453) and retry with the X-PAYMENT header. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
+  },
+  servers: [{ url: PUBLIC_URL }],
+  security: [{ x402: [] }],
+  components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "X-PAYMENT", description: `x402 USDC payment on ${NETWORK}; settle then resend with the X-PAYMENT header.` } } },
   paths: { "/audit": { post: {
     summary: "Audit a crypto-bot source file (paid via x402)",
-    "x-payment": { required: true, network: NETWORK, currency: "USDC", price: PRICE, payTo: PAY_TO, facilitator: FACILITATOR_URL },
+    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.05" } },
+    security: [{ x402: [] }],
     requestBody: { required: true, content: { "application/json": { schema: { type: "object",
       properties: { code: { type: "string", description: "one JS/TS file" }, filename: { type: "string" } }, required: ["code"] } } } },
     responses: { 200: { description: "findings[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
