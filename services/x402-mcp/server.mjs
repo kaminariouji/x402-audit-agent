@@ -35,6 +35,11 @@ const acceptsFor = (price) => ([
   { scheme: "exact", price, network: NETWORK, payTo: PAY_TO },
   { scheme: "exact", price, network: SOLANA_NETWORK, payTo: PAY_TO_SOLANA },
 ]);
+// Bazaar catalog search only reads what the 402 challenge carries: serviceName (<=32 chars),
+// the FIRST 5 tags, description and iconUrl (see @x402/extensions sanitize* rules). Facilitators
+// soft-drop anything over those limits, so the arrays below are capped at 5, strongest first.
+const SERVICE_NAME = "x402 Audit + Market Data";
+const ICON_URL = process.env.X402_ICON_URL || "https://github.com/kaminariouji.png";
 // Shared pricing block for every human/crawler-facing discovery route.
 const PAYMENT_INFO = {
   protocol: "x402 (HTTP 402)", currency: "USDC",
@@ -345,7 +350,10 @@ const resourceServer = new x402ResourceServer(facilitatorClient)
 const httpServer = new x402HTTPResourceServer(resourceServer, {
   "POST /mcp": {
     accepts: acceptsFor(PRICE),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
     description: "Per-call x402 payment to run audit_bot_code on one source file.",
+    tags: ["mcp", "audit", "security", "agents", "ai"],
     mimeType: "application/json",
     extensions: {
       ...declareDiscoveryExtension({
@@ -358,7 +366,10 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
   "POST /audit": {
     accepts: acceptsFor(PRICE),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
     description: "Per-call x402 payment to audit one JS/TS crypto-bot source file over plain HTTP.",
+    tags: ["audit", "security", "crypto", "code-analysis", "agents"],
     mimeType: "application/json",
     extensions: {
       ...declareDiscoveryExtension({
@@ -371,9 +382,11 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
   "GET /price": {
     accepts: acceptsFor(PRICE_DATA),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
     description: "Live DEX spot price + liquidity + FDV + 24h volume for any token by contract address (query ?address=0x.. or a Solana mint); returns the highest-liquidity pair. Cheap per-call market quote. — $0.01 USDC",
     mimeType: "application/json",
-    tags: ["price", "defi", "market-data", "base", "solana", "token", "liquidity", "quote"],
+    tags: ["price", "token", "market-data", "quote", "crypto"],
     extensions: {
       ...declareDiscoveryExtension({
         method: "GET",
@@ -385,9 +398,11 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
   "GET /search_tokens": {
     accepts: acceptsFor(PRICE_DATA),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
     description: "Search crypto tokens by name/symbol (query ?q=pepe&limit=12); returns highest-liquidity matched pairs with price, liquidity, FDV and 24h volume. Cheap per-call market lookup. — $0.01 USDC",
     mimeType: "application/json",
-    tags: ["search", "tokens", "defi", "market-data", "price", "liquidity"],
+    tags: ["token", "search", "price", "market-data", "crypto"],
     extensions: {
       ...declareDiscoveryExtension({
         method: "GET",
@@ -399,9 +414,11 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
   "GET /markets": {
     accepts: acceptsFor(PRICE_DATA),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
     description: "Top coins by market cap: price, market cap, 24h volume, 1h/24h/7d change (query ?vs=usd&limit=25). Keyless pay-per-call market table for agents. — $0.01 USDC",
     mimeType: "application/json",
-    tags: ["market-data", "price", "markets", "market-cap", "crypto", "quote"],
+    tags: ["market-cap", "price", "market-data", "crypto", "quote"],
     extensions: {
       ...declareDiscoveryExtension({
         method: "GET",
@@ -413,9 +430,11 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
   "GET /tvl": {
     accepts: acceptsFor(PRICE_DATA),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
     description: "DeFi value-locked ranking per chain (query ?limit=25): TVL in USD plus chain id and gas token. — $0.01 USDC",
     mimeType: "application/json",
-    tags: ["defi", "tvl", "market-data", "chains", "protocol-inventory"],
+    tags: ["tvl", "defi", "market-data", "chains", "crypto"],
     extensions: {
       ...declareDiscoveryExtension({
         method: "GET",
@@ -427,9 +446,11 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
   "GET /stablecoins": {
     accepts: acceptsFor(PRICE_DATA),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
     description: "USD-pegged stablecoin supply by asset, peg mechanism and chain count (query ?limit=20). — $0.01 USDC",
     mimeType: "application/json",
-    tags: ["stablecoins", "defi", "market-data", "supply", "peg"],
+    tags: ["stablecoins", "usdc", "peg", "supply", "market-data"],
     extensions: {
       ...declareDiscoveryExtension({
         method: "GET",
@@ -441,9 +462,11 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
   "GET /trending": {
     accepts: acceptsFor(PRICE_DATA),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
     description: "Currently promoted DEX tokens with live price, liquidity and 24h volume (query ?limit=10&chain=base|solana|..). Note: boosts are paid promotions by token projects. — $0.01 USDC",
     mimeType: "application/json",
-    tags: ["trending", "dex", "market-data", "tokens", "liquidity", "solana", "base"],
+    tags: ["trending", "dex", "token", "solana", "market-data"],
     extensions: {
       ...declareDiscoveryExtension({
         method: "GET",
@@ -455,9 +478,11 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
   "GET /gas": {
     accepts: acceptsFor(PRICE_DATA),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
     description: "Live gas + base fee in gwei for Base and Arbitrum from public RPC (query ?chains=base,arbitrum). Costs a transaction before you send it. — $0.01 USDC",
     mimeType: "application/json",
-    tags: ["gas", "fees", "evm", "base", "arbitrum", "market-data", "transaction-cost"],
+    tags: ["gas", "fees", "base", "arbitrum", "market-data"],
     extensions: {
       ...declareDiscoveryExtension({
         method: "GET",
@@ -550,8 +575,8 @@ app.get("/discovery/resources", (_req, res) => res.json({
   resources: PAYABLE_ROUTES.map((r) => PUBLIC_URL + r.path),
   items: PAYABLE_ROUTES.map((r) => ({
     resource: PUBLIC_URL + r.path, method: r.method, x402Version: 2,
-    accepts: acceptsFor(r.price), serviceName: "crypto-bot-honesty-audit",
-    description: r.description, tags: ["crypto", "audit", "market-data", "agent"],
+    accepts: acceptsFor(r.price), serviceName: SERVICE_NAME, iconUrl: ICON_URL,
+    description: r.description, tags: r.tags ?? ["crypto", "audit", "market-data", "agents", "api"],
   })),
 }));
 // Deliberately permissive: every route is public (payment is enforced per-request, not by
