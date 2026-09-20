@@ -40,6 +40,34 @@ async function fetchPrice(address) {
     priceUsd: p.priceUsd, liquidityUsd: p.liquidity?.usd, fdv: p.fdv, volume24h: p.volume?.h24,
     chainId: p.chainId, dex: p.dexId, pairUrl: p.url, source: "dexscreener", ts: new Date().toISOString() };
 }
+// Pinned, keyless upstream (Dexscreener). The URL host is a constant and the query is
+// encoded — no user-controlled host, so this route cannot be turned into an SSRF probe.
+const DEXSCREENER_SEARCH = "https://api.dexscreener.com/latest/dex/search?q=";
+const LEAN = 12;
+function leanPair(p) {
+  return {
+    chainId: p.chainId, dex: p.dexId,
+    symbol: p.baseToken?.symbol, name: p.baseToken?.name, address: p.baseToken?.address,
+    priceUsd: p.priceUsd, liquidityUsd: p.liquidity?.usd, fdv: p.fdv, marketCap: p.marketCap,
+    volume24h: p.volume?.h24, change24h: p.priceChange?.h24, pairUrl: p.url,
+  };
+}
+async function searchTokens(rawQuery, limit) {
+  const r = await fetch(DEXSCREENER_SEARCH + encodeURIComponent(rawQuery), { headers: { accept: "application/json" } });
+  const j = await r.json().catch(() => ({}));
+  const all = (j.pairs || []).map(leanPair);
+  // Dedupe by chain+token address, keep the deepest-liquidity pair per token, then rank.
+  const byToken = new Map();
+  for (const p of all) {
+    const k = `${p.chainId}:${(p.address || "").toLowerCase()}`;
+    const cur = byToken.get(k);
+    if (!cur || (p.liquidityUsd || 0) > (cur.liquidityUsd || 0)) byToken.set(k, p);
+  }
+  const results = [...byToken.values()]
+    .sort((a, b) => (b.liquidityUsd || 0) - (a.liquidityUsd || 0))
+    .slice(0, limit);
+  return { query: rawQuery, count: results.length, results, source: "dexscreener", ts: new Date().toISOString() };
+}
 const mcp = new McpServer({ name: "crypto-bot-honesty-audit", version: "1.0.0" }, {
   instructions: "Scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
 });
@@ -84,6 +112,17 @@ mcp.registerTool("get_token_price", {
     return { content: [{ type: "text", text: JSON.stringify({ error: "address must be a 0x EVM token contract (42 chars)" }) }], isError: true };
   const price = await fetchPrice(address.trim());
   return { content: [{ type: "text", text: JSON.stringify(price, null, 2) }] };
+});
+mcp.registerTool("search_tokens", {
+  title: "Search tokens by name/symbol across DEXs (paid)",
+  description: "Search crypto tokens by name or symbol; returns the highest-liquidity matched pairs with price, liquidity, FDV and 24h volume across chains. Cheap per-call market lookup (0.01 USDC via x402).",
+  inputSchema: { query: z.string().describe("token name or symbol, e.g. \"pepe\" or \"coinbase\""), limit: z.number().int().min(1).max(25).optional() },
+}, async ({ query, limit }) => {
+  const q = typeof query === "string" ? query.trim() : "";
+  if (q.length < 1 || q.length > 64)
+    return { content: [{ type: "text", text: JSON.stringify({ error: "query must be 1-64 chars" }) }], isError: true };
+  const results = await searchTokens(q, Math.min(Math.max(Number(limit) || LEAN, 1), 25));
+  return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
 });
 
 // ---- x402 resource server ----
@@ -148,6 +187,20 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
       }),
     },
   },
+  "GET /search_tokens": {
+    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    description: "Search crypto tokens by name/symbol (query ?q=pepe&limit=12); returns highest-liquidity matched pairs with price, liquidity, FDV and 24h volume. Cheap per-call market lookup. — $0.01 USDC",
+    mimeType: "application/json",
+    tags: ["search", "tokens", "defi", "market-data", "price", "liquidity"],
+    extensions: {
+      ...declareDiscoveryExtension({
+        method: "GET",
+        input: { q: "pepe" },
+        inputSchema: { type: "object", properties: { q: { type: "string", description: "token name or symbol to search" }, limit: { type: "number", description: "max results 1-25 (optional)" } }, required: ["q"] },
+        output: { example: { query: "pepe", count: 2, results: [{ chainId: "base", symbol: "PEPE", address: "0x..", priceUsd: "0.00001", liquidityUsd: 42000, fdv: 120000, volume24h: 9000, source: "dexscreener" }], source: "dexscreener", ts: "2026-09-20T00:00:00.000Z" } },
+      }),
+    },
+  },
 });
 // Gate the JSON-RPC method level on /mcp; /audit is gated by matching its route config.
 httpServer.requiresPayment = function (context) {
@@ -155,6 +208,7 @@ httpServer.requiresPayment = function (context) {
   const path = context.path;
   if (method === "POST" && path === "/audit") return true;
   if (method === "GET" && path === "/price") return true;
+  if (method === "GET" && path === "/search_tokens") return true;
   if (method === "POST" && path === "/mcp") {
     const body = context.adapter?.getBody?.() || {};
     if (FREE_METHODS.has(body.method)) return false;
@@ -172,7 +226,7 @@ app.use(express.json({ limit: "2mb" }));
 app.get("/health", (_req, res) => res.json({ ok: true, kind: "mcp+http", payTo: PAY_TO, network: NETWORK, price: PRICE }));
 app.get("/", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
-  endpoints: { paid: ["POST /audit", "GET /price?address=0x.. (token spot price)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
+  endpoints: { paid: ["POST /audit", "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
   price: PRICE, network: NETWORK, currency: "USDC", payTo: PAY_TO, protocol: "x402 (HTTP 402)",
 }));
 app.get("/audit", (_req, res) => res.status(405).json({
@@ -183,9 +237,9 @@ app.get("/audit", (_req, res) => res.status(405).json({
 app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
   res.json({
     version: 1,
-    resources: [`${PUBLIC_URL}/audit`, `${PUBLIC_URL}/price`],
+    resources: [`${PUBLIC_URL}/audit`, `${PUBLIC_URL}/price`, `${PUBLIC_URL}/search_tokens`],
     ownershipProofs: [PAY_TO],
-    instructions: "Pay-per-call x402 USDC on Base. POST /audit with an x402 payment; GET /price?address=0x.. for a token quote; MCP tool audit_bot_code on POST /mcp.",
+    instructions: "Pay-per-call x402 USDC on Base. POST /audit with an x402 payment; GET /price?address=0x.. for a token quote; GET /search_tokens?q=.. for a token search; MCP tool audit_bot_code on POST /mcp.",
   });
 });
 app.get("/.well-known/x402-info", (_req, res) => res.json({
@@ -197,9 +251,10 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
   pricing: { currency: "USDC", network: NETWORK, endpoints: [
     { path: "/audit", method: "POST", price: PRICE },
     { path: "/price", method: "GET", price: PRICE_DATA, note: "token spot price by ?address=0x.." },
+    { path: "/search_tokens", method: "GET", price: PRICE_DATA, note: "token search by ?q=name-or-symbol" },
     { path: "/mcp", method: "POST", price: PRICE, note: "per tools/call audit_bot_code" },
   ], freeEndpoints: ["/", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
-  capabilities: ["analyze", "audit", "classify", "market-data", "price"],
+  capabilities: ["analyze", "audit", "classify", "market-data", "price", "search"],
   payTo: PAY_TO,
 }));
 app.get("/openapi.json", (_req, res) => res.json({
@@ -208,7 +263,7 @@ app.get("/openapi.json", (_req, res) => res.json({
     title: "crypto-bot-honesty-audit", version: "1.0.0",
     description: "Pay-per-call x402 agent: scans one JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
     contact: { url: "https://github.com/kaminariouji/x402-audit-agent" },
-    "x-guidance": "Two paid routes. (1) POST /audit body { code, filename } -> 0.05 USDC. (2) GET /price?address=0x.. (Base token spot price + liquidity) -> 0.01 USDC. Unpaid -> HTTP 402 with x402 terms; pay USDC on Base (eip155:8453) via an x402 client and retry. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
+    "x-guidance": "Paid routes. (1) POST /audit body { code, filename } -> 0.05 USDC. (2) GET /price?address=0x.. (Base token spot price + liquidity) -> 0.01 USDC. (3) GET /search_tokens?q=name (token search, highest-liquidity pairs) -> 0.01 USDC. Unpaid -> HTTP 402 with x402 terms; pay USDC on Base (eip155:8453) via an x402 client and retry. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
   },
   servers: [{ url: PUBLIC_URL }],
   security: [{ x402: [] }],
@@ -226,6 +281,15 @@ app.get("/openapi.json", (_req, res) => res.json({
     security: [{ x402: [] }],
     parameters: [{ name: "address", in: "query", required: true, description: "ERC-20 token contract address (0x…, 42 chars)", schema: { type: "string" } }],
     responses: { 200: { description: "priceUsd/liquidity/fdv after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
+  } }, "/search_tokens": { get: {
+    summary: "Search crypto tokens by name/symbol; returns highest-liquidity matched pairs (paid via x402)",
+    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.01" } },
+    security: [{ x402: [] }],
+    parameters: [
+      { name: "q", in: "query", required: true, description: "token name or symbol to search (1-64 chars)", schema: { type: "string" } },
+      { name: "limit", in: "query", required: false, description: "max results 1-25", schema: { type: "number" } },
+    ],
+    responses: { 200: { description: "results[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
   } } },
 }));
 app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
@@ -235,6 +299,8 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "Facilitator: " + FACILITATOR_URL, "",
   "## Endpoints",
   "- `POST /audit` (paid): body `{ \"code\": \"<file>\", \"filename\": \"bot.js\" }` -> `{ signalCount, findings[] }`. Unpaid -> HTTP 402.",
+  `- \`GET /price?address=0x..\` (paid, ${PRICE_DATA}): live DEX spot price + liquidity + FDV + 24h volume for a Base ERC-20 token by contract address.`,
+  `- \`GET /search_tokens?q=name&limit=12\` (paid, ${PRICE_DATA}): search tokens by name/symbol -> highest-liquidity matched pairs (price/liquidity/FDV/volume across chains).`,
   "- `POST /mcp` (paid per tools/call `audit_bot_code`); MCP `demo_audit` + handshake are free.",
   "- `GET /`, `/health`, `/.well-known/x402-info` (free metadata)", "",
   "## Buyer quickstart (no signup — your x402 client auto-pays the 402 and retries)",
@@ -250,7 +316,7 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "const { signalCount, findings } = await res.json(); // returned only after settlement",
   "```",
   "Facilitator verify/settle is free for the seller (buyer pays gas). Docs: https://docs.x402.org/getting-started/quickstart-for-buyers", "",
-  "MCP: point any MCP client at " + PUBLIC_URL + "/mcp (Streamable HTTP). initialize, tools/list and demo_audit are free; audit_bot_code is the paid tool.", "",
+  "MCP: point any MCP client at " + PUBLIC_URL + "/mcp (Streamable HTTP). initialize, tools/list and demo_audit are free; paid tools are audit_bot_code, get_token_price, search_tokens.", "",
   "Source: https://github.com/kaminariouji/x402-audit-agent",
 ].join("\n")));
 
@@ -273,6 +339,17 @@ app.get("/price", async (req, res) => {
     res.json(await fetchPrice(address));
   } catch (e) {
     res.status(502).json({ address, error: "upstream_price_lookup_failed", detail: String(e?.message || e) });
+  }
+});
+// Paid token-search route: name/symbol -> highest-liquidity matched pairs (only after settlement).
+app.get("/search_tokens", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (q.length < 1 || q.length > 64) return res.status(400).json({ error: "query ?q= must be 1-64 chars" });
+  const limit = Math.min(Math.max(Number(req.query.limit) || LEAN, 1), 25);
+  try {
+    res.json(await searchTokens(q, limit));
+  } catch (e) {
+    res.status(502).json({ query: q, error: "upstream_search_lookup_failed", detail: String(e?.message || e) });
   }
 });
 app.post("/mcp", async (req, res) => {
