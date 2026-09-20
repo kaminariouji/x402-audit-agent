@@ -9,6 +9,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { x402ResourceServer, x402HTTPResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { paymentMiddlewareFromHTTPServer } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { ExactSvmScheme } from "@x402/svm/exact/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { z } from "zod";
 
@@ -25,6 +26,23 @@ const PRICE_DATA = process.env.X402_PRICE_DATA || "$0.01"; // per-call price for
 const PORT = Number(process.env.PORT || 10000); // Render injects PORT
 // Public origin used in discovery metadata (OpenAPI servers, x402 resource fan-out).
 const PUBLIC_URL = (process.env.X402_PUBLIC_URL || "https://labored-safari-islamic.ngrok-free.dev").replace(/\/+$/, "");
+// 509 of the ~1000 resources indexed by our facilitator settle on Solana vs 456 on Base, so
+// Base-only pricing excluded the majority of paying agents. One challenge, both networks; the
+// Solana entry carries the facilitator's feePayer, so receiving USDC still costs the wallet $0.
+const SOLANA_NETWORK = process.env.X402_SOLANA_NETWORK || "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+const PAY_TO_SOLANA = process.env.X402_PAY_TO_SOLANA || "5NWSPyJChL2NJf3oEr6Mh4vLvG5S3qQmf5S4v7v8wEV4";
+const acceptsFor = (price) => ([
+  { scheme: "exact", price, network: NETWORK, payTo: PAY_TO },
+  { scheme: "exact", price, network: SOLANA_NETWORK, payTo: PAY_TO_SOLANA },
+]);
+// Shared pricing block for every human/crawler-facing discovery route.
+const PAYMENT_INFO = {
+  protocol: "x402 (HTTP 402)", currency: "USDC",
+  networks: [
+    { network: NETWORK, label: "Base mainnet", asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", payTo: PAY_TO, prices: { audit: PRICE, data: PRICE_DATA } },
+    { network: SOLANA_NETWORK, label: "Solana mainnet", asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", payTo: PAY_TO_SOLANA, prices: { audit: PRICE, data: PRICE_DATA }, note: "facilitator is feePayer; receiving costs the seller $0" },
+  ],
+};
 
 const FREE_METHODS = new Set(["initialize", "notifications/initialized", "ping", "tools/list", "resources/list", "prompts/list"]);
 const FREE_TOOLS = new Set(["demo_audit"]);
@@ -321,10 +339,12 @@ const facilitatorClient = FACILITATOR_HEADERS
       }),
     })
   : new HTTPFacilitatorClient({ url: FACILITATOR_URL });
-const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWORK, new ExactEvmScheme());
+const resourceServer = new x402ResourceServer(facilitatorClient)
+  .register(NETWORK, new ExactEvmScheme())
+  .register(SOLANA_NETWORK, new ExactSvmScheme());
 const httpServer = new x402HTTPResourceServer(resourceServer, {
   "POST /mcp": {
-    accepts: { scheme: "exact", price: PRICE, network: NETWORK, payTo: PAY_TO },
+    accepts: acceptsFor(PRICE),
     description: "Per-call x402 payment to run audit_bot_code on one source file.",
     mimeType: "application/json",
     extensions: {
@@ -337,7 +357,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     },
   },
   "POST /audit": {
-    accepts: { scheme: "exact", price: PRICE, network: NETWORK, payTo: PAY_TO },
+    accepts: acceptsFor(PRICE),
     description: "Per-call x402 payment to audit one JS/TS crypto-bot source file over plain HTTP.",
     mimeType: "application/json",
     extensions: {
@@ -350,7 +370,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     },
   },
   "GET /price": {
-    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    accepts: acceptsFor(PRICE_DATA),
     description: "Live DEX spot price + liquidity + FDV + 24h volume for any token by contract address (query ?address=0x.. or a Solana mint); returns the highest-liquidity pair. Cheap per-call market quote. — $0.01 USDC",
     mimeType: "application/json",
     tags: ["price", "defi", "market-data", "base", "solana", "token", "liquidity", "quote"],
@@ -364,7 +384,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     },
   },
   "GET /search_tokens": {
-    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    accepts: acceptsFor(PRICE_DATA),
     description: "Search crypto tokens by name/symbol (query ?q=pepe&limit=12); returns highest-liquidity matched pairs with price, liquidity, FDV and 24h volume. Cheap per-call market lookup. — $0.01 USDC",
     mimeType: "application/json",
     tags: ["search", "tokens", "defi", "market-data", "price", "liquidity"],
@@ -378,7 +398,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     },
   },
   "GET /markets": {
-    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    accepts: acceptsFor(PRICE_DATA),
     description: "Top coins by market cap: price, market cap, 24h volume, 1h/24h/7d change (query ?vs=usd&limit=25). Keyless pay-per-call market table for agents. — $0.01 USDC",
     mimeType: "application/json",
     tags: ["market-data", "price", "markets", "market-cap", "crypto", "quote"],
@@ -392,7 +412,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     },
   },
   "GET /tvl": {
-    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    accepts: acceptsFor(PRICE_DATA),
     description: "DeFi value-locked ranking per chain (query ?limit=25): TVL in USD plus chain id and gas token. — $0.01 USDC",
     mimeType: "application/json",
     tags: ["defi", "tvl", "market-data", "chains", "protocol-inventory"],
@@ -406,7 +426,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     },
   },
   "GET /stablecoins": {
-    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    accepts: acceptsFor(PRICE_DATA),
     description: "USD-pegged stablecoin supply by asset, peg mechanism and chain count (query ?limit=20). — $0.01 USDC",
     mimeType: "application/json",
     tags: ["stablecoins", "defi", "market-data", "supply", "peg"],
@@ -420,7 +440,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     },
   },
   "GET /trending": {
-    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    accepts: acceptsFor(PRICE_DATA),
     description: "Currently promoted DEX tokens with live price, liquidity and 24h volume (query ?limit=10&chain=base|solana|..). Note: boosts are paid promotions by token projects. — $0.01 USDC",
     mimeType: "application/json",
     tags: ["trending", "dex", "market-data", "tokens", "liquidity", "solana", "base"],
@@ -434,7 +454,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     },
   },
   "GET /gas": {
-    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    accepts: acceptsFor(PRICE_DATA),
     description: "Live gas + base fee in gwei for Base and Arbitrum from public RPC (query ?chains=base,arbitrum). Costs a transaction before you send it. — $0.01 USDC",
     mimeType: "application/json",
     tags: ["gas", "fees", "evm", "base", "arbitrum", "market-data", "transaction-cost"],
@@ -477,15 +497,23 @@ app.use((req, res, next) => {
 });
 
 // ---- free metadata (registered BEFORE the payment gate) ----
-app.get("/health", (_req, res) => res.json({ ok: true, kind: "mcp+http", payTo: PAY_TO, network: NETWORK, price: PRICE }));
+app.get("/health", (_req, res) => res.json({ ok: true, kind: "mcp+http", ...PAYMENT_INFO }));
 app.get("/", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
   endpoints: { paid: ["POST /audit (crypto-bot honesty scan, $0.05)", "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "GET /markets?vs=usd&limit=25 (top coins by market cap)", "GET /tvl?limit=25 (chain TVL ranking)", "GET /stablecoins?limit=20 (pegged supply)", "GET /trending?limit=10 (promoted DEX tokens with quotes)", "GET /gas?chains=base,arbitrum (live gwei)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
-  price: PRICE, network: NETWORK, currency: "USDC", payTo: PAY_TO, protocol: "x402 (HTTP 402)",
+  ...PAYMENT_INFO,
 }));
 app.get("/audit", (_req, res) => res.status(405).json({
-  error: "method_not_allowed", paid_endpoint: "POST /audit", price: PRICE, network: NETWORK, currency: "USDC", payTo: PAY_TO,
+  error: "method_not_allowed", paid_endpoint: "POST /audit", ...PAYMENT_INFO,
   probe: "this service is LIVE; send POST with an x402 payment to use it",
+}));
+// Monitors probe GET /mcp for liveness. The Streamable-HTTP spec says a server that does not
+// offer SSE answering GET with 405 — returning 404 made indexers mark this live server dead.
+app.get("/mcp", (_req, res) => res.status(405).set("Allow", "POST").json({
+  error: "method_not_allowed", protocol: "MCP Streamable HTTP", transport: "POST only",
+  endpoint: `${PUBLIC_URL}/mcp`, server: "io.github.kaminariouji/x402-audit-agent",
+  paywall: { ...PAYMENT_INFO, tool_prices: { audit_bot_code: PRICE, market_data_tools: PRICE_DATA } },
+  free_tools: ["demo_audit"], probe: "this MCP server is LIVE; POST an initialize to use it",
 }));
 // Agent Souk publisher verification (trust tier 2): proves this host belongs to our agent id.
 const SOUK_AGENT_ID = process.env.AGENTSOUK_AGENT_ID || "";
@@ -496,7 +524,7 @@ app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
     version: 1,
     resources: [`${PUBLIC_URL}/audit`, ...[...PAID_DATA_PATHS].map((p) => PUBLIC_URL + p)],
     ownershipProofs: [PAY_TO],
-    instructions: "Pay-per-call x402 USDC on Base, no account and no API key. POST /audit for a crypto-bot honesty scan; GET /price?address=0x.., /search_tokens?q=.., /markets, /tvl, /stablecoins, /trending, /gas for market data at $0.01; MCP tool audit_bot_code on POST /mcp.",
+    instructions: "Pay-per-call x402 USDC on Base or Solana, no account and no API key. POST /audit for a crypto-bot honesty scan; GET /price?address=0x.., /search_tokens?q=.., /markets, /tvl, /stablecoins, /trending, /gas for market data at $0.01; MCP tool audit_bot_code on POST /mcp.",
   });
 });
 app.get("/.well-known/x402-info", (_req, res) => res.json({
@@ -505,7 +533,7 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
   documentationUrl: "https://github.com/kaminariouji/x402-audit-agent",
   contactUrl: "https://github.com/kaminariouji",
   protocol: "x402 (HTTP 402)",
-  pricing: { currency: "USDC", network: NETWORK, endpoints: [
+  pricing: { currency: "USDC", networks: [NETWORK, SOLANA_NETWORK], endpoints: [
     { path: "/audit", method: "POST", price: PRICE },
     { path: "/price", method: "GET", price: PRICE_DATA, note: "token spot price by ?address= (EVM 0x or Solana mint)" },
     { path: "/search_tokens", method: "GET", price: PRICE_DATA, note: "token search by ?q=name-or-symbol" },
@@ -517,7 +545,7 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
     { path: "/mcp", method: "POST", price: PRICE, note: "per tools/call audit_bot_code" },
   ], freeEndpoints: ["/", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
   capabilities: ["analyze", "audit", "classify", "market-data", "price", "search", "markets", "market-cap", "tvl", "defi", "stablecoins", "trending", "gas", "fees", "transaction-cost"],
-  payTo: PAY_TO,
+  payTo: { [NETWORK]: PAY_TO, [SOLANA_NETWORK]: PAY_TO_SOLANA },
 }));
 app.get("/openapi.json", (_req, res) => res.json({
   openapi: "3.0.0",
@@ -525,11 +553,11 @@ app.get("/openapi.json", (_req, res) => res.json({
     title: "crypto-bot-honesty-audit", version: "1.0.0",
     description: "Pay-per-call x402 agent: crypto-bot honesty scan plus keyless per-call crypto market data (price, search, market cap, TVL, stablecoins, trending, gas).",
     contact: { url: "https://github.com/kaminariouji/x402-audit-agent" },
-    "x-guidance": "Paid routes, no signup and no API key. (1) POST /audit body { code, filename } -> 0.05 USDC. (2) GET /price?address=0x.. -> 0.01 USDC. (3) GET /search_tokens?q=name -> 0.01 USDC. (4) GET /markets?vs=usd&limit=25, /tvl?limit=25, /stablecoins?limit=20, /trending?limit=10&chain=base, /gas?chains=base,arbitrum -> 0.01 USDC each. Unpaid -> HTTP 402 with x402 terms; pay USDC on Base (eip155:8453) via an x402 client and retry. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
+    "x-guidance": "Paid routes, no signup and no API key. (1) POST /audit body { code, filename } -> 0.05 USDC. (2) GET /price?address=0x.. -> 0.01 USDC. (3) GET /search_tokens?q=name -> 0.01 USDC. (4) GET /markets?vs=usd&limit=25, /tvl?limit=25, /stablecoins?limit=20, /trending?limit=10&chain=base, /gas?chains=base,arbitrum -> 0.01 USDC each. Unpaid -> HTTP 402 with x402 terms; pay USDC on Base (eip155:8453) or Solana (solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp) via an x402 client and retry. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
   },
   servers: [{ url: PUBLIC_URL }],
   security: [{ x402: [] }],
-  components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "X-PAYMENT", description: `x402 USDC payment on ${NETWORK}; settle then resend with the X-PAYMENT header.` } } },
+  components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "X-PAYMENT", description: `x402 USDC payment on ${NETWORK} or ${SOLANA_NETWORK}; the 402 challenge lists both accepts. Settle one, then resend with the X-PAYMENT header.` } } },
   paths: { "/audit": { post: {
     summary: "Audit a crypto-bot source file (paid via x402)",
     "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.05" } },
@@ -577,7 +605,7 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "- `POST /mcp` (paid per tools/call `audit_bot_code`); MCP `demo_audit` + handshake are free.",
   "- `GET /`, `/health`, `/.well-known/x402-info` (free metadata)", "",
   "## Buyer quickstart (no signup — your x402 client auto-pays the 402 and retries)",
-  "Any funded EVM wallet on Base can call this; you keep your own keys, we never hold funds. A standard x402 client catches our HTTP 402, reads the header, pays " + PRICE + " USDC on " + NETWORK + ", and retries transparently.", "",
+  "Any funded wallet on Base or Solana can call this; you keep your own keys, we never hold funds. A standard x402 client catches our HTTP 402, reads the header, pays " + PRICE + " USDC on " + NETWORK + " or " + SOLANA_NETWORK + ", and retries transparently.", "",
   "```js",
   "import { x402Fetch } from \"x402-fetch\";        // or x402-axios / x402-requests",
   "import { privateKeyToAccount } from \"viem/accounts\";",
@@ -588,8 +616,9 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "}, { wallet });",
   "const { signalCount, findings } = await res.json(); // returned only after settlement",
   "```",
-  "Facilitator verify/settle is free for the seller (buyer pays gas). Docs: https://docs.x402.org/getting-started/quickstart-for-buyers", "",
-  "MCP: point any MCP client at " + PUBLIC_URL + "/mcp (Streamable HTTP). initialize, tools/list and demo_audit are free; paid tools are audit_bot_code, get_token_price, search_tokens.", "",
+  "Facilitator verify/settle is free for the seller (buyer pays gas; on Solana the facilitator is the feePayer). Docs: https://docs.x402.org/getting-started/quickstart-for-buyers", "",
+  "Solana buyers: pick the second `accepts` entry in our 402 challenge (network " + SOLANA_NETWORK + ", USDC mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v) and pay it with `@x402/fetch` plus `registerExactSvmScheme` from `@x402/svm/exact/client`.", "",
+  "MCP: point any MCP client at " + PUBLIC_URL + "/mcp (Streamable HTTP, POST only). initialize, tools/list and demo_audit are free; paid tools are audit_bot_code, get_token_price, search_tokens, top_markets, chain_tvl, stablecoin_supply, trending_tokens, gas_prices.", "",
   "Source: https://github.com/kaminariouji/x402-audit-agent",
 ].join("\n")));
 
