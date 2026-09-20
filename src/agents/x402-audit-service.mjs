@@ -123,6 +123,21 @@ app.get("/", (_req, res) => {
 // Free liveness probe.
 app.get("/health", (_req, res) => res.json({ ok: true, payTo: PAY_TO, network: NETWORK }));
 
+// Cold-probe friendliness (x402 discovery issue #3113): a crawler that GETs the
+// paid route must see it is ALIVE + priced, not a 404 that reads as "dead".
+app.get("/audit", (_req, res) => {
+  res.status(405).json({
+    error: "method_not_allowed",
+    paid_endpoint: "POST /audit",
+    price: PRICE,
+    network: NETWORK,
+    currency: "USDC",
+    payTo: PAY_TO,
+    protocol: "x402 (HTTP 402 on POST)",
+    probe: "this service is LIVE; send POST with an x402 payment to use it",
+  });
+});
+
 // Standard discovery metadata pulled by x402 registries/crawlers (Bazaar, overlay).
 app.get("/.well-known/x402-info", (_req, res) => {
   res.json({
