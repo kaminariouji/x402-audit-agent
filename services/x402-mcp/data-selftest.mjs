@@ -76,6 +76,11 @@ check("GET /markets unpaid -> 402", data.status === 402, data.status);
 check("data 402 is dual-network too", dNets.length === 2, dNets.join(","));
 check("data priced 0.01 USDC on both", (data.body.accepts || []).every((a) => a.amount === "10000"), JSON.stringify(data.body.accepts?.map((a) => a.amount)));
 const mcpGet = await fetch(base + "/mcp");
+const rm = audit.body.resource || {};
+console.log("resource metadata:", JSON.stringify({ serviceName: rm.serviceName, tags: rm.tags, iconUrl: rm.iconUrl }));
+check("402 resource carries serviceName (<=32 ascii)", typeof rm.serviceName === "string" && rm.serviceName.length > 0 && rm.serviceName.length <= 32, String(rm.serviceName));
+check("402 resource carries <=5 tags", Array.isArray(rm.tags) && rm.tags.length > 0 && rm.tags.length <= 5, JSON.stringify(rm.tags));
+check("402 resource carries absolute https iconUrl", String(rm.iconUrl).startsWith("https://") && !/\s/.test(rm.iconUrl), String(rm.iconUrl));
 check("GET /mcp -> 405 with Allow: POST", mcpGet.status === 405 && mcpGet.headers.get("allow") === "POST", `${mcpGet.status}/${mcpGet.headers.get("allow")}`);
 
 // Crawler conventions must be FREE (no 402) and complete, or catalogers skip the service.
