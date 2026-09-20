@@ -30,14 +30,25 @@ const FREE_METHODS = new Set(["initialize", "notifications/initialized", "ping",
 const FREE_TOOLS = new Set(["demo_audit"]);
 
 // ---- MCP server ----
+// Accept an EVM address (0x + 40 hex) OR a Solana base58 mint (32-44 chars). This keeps
+// the route a token-address lookup a caller cannot steer — the upstream host stays pinned.
+const EVM_ADDR = /^0x[a-fA-F0-9]{40}$/;
+const SOL_MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+function isTokenAddress(a) { return EVM_ADDR.test(a) || SOL_MINT.test(a); }
 async function fetchPrice(address) {
-  const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, { headers: { accept: "application/json" } });
+  const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}`, { headers: { accept: "application/json" } });
   const j = await r.json().catch(() => ({}));
-  const pairs = (j.pairs || []).filter(p => p.chainId === "base").sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
-  const p = pairs[0] || (j.pairs || [])[0];
-  if (!p) return { address, found: false, note: "no DEX pair found for this token", source: "dexscreener", ts: new Date().toISOString() };
+  // Price the requested token ITSELF: keep only pairs where it is the baseToken (a stablecoin
+  // like USDC usually appears only as the quote, so its "price" would otherwise be the pool's
+  // other side, e.g. AERO). Take the deepest-liquidity such pair across any chain.
+  const lc = address.toLowerCase();
+  const pairs = (j.pairs || [])
+    .filter(p => { const bt = p.baseToken?.address; return bt && (bt === address || bt.toLowerCase() === lc); })
+    .sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+  const p = pairs[0];
+  if (!p) return { address, found: false, note: "no DEX pair where this address is the base token", source: "dexscreener", ts: new Date().toISOString() };
   return { address, found: true, name: p.baseToken?.name, symbol: p.baseToken?.symbol,
-    priceUsd: p.priceUsd, liquidityUsd: p.liquidity?.usd, fdv: p.fdv, volume24h: p.volume?.h24,
+    priceUsd: p.priceUsd, liquidityUsd: p.liquidity?.usd, fdv: p.fdv, marketCap: p.marketCap, volume24h: p.volume?.h24,
     chainId: p.chainId, dex: p.dexId, pairUrl: p.url, source: "dexscreener", ts: new Date().toISOString() };
 }
 // Pinned, keyless upstream (Dexscreener). The URL host is a constant and the query is
@@ -104,13 +115,14 @@ mcp.registerTool("demo_audit", {
   return { content: [{ type: "text", text: JSON.stringify({ demo: true, signalCount: findings.length, findings }, null, 2) }] };
 });
 mcp.registerTool("get_token_price", {
-  title: "Base token spot price + liquidity (paid)",
-  description: "Live DEX spot price, liquidity, FDV and 24h volume for a Base ERC-20 token by contract address. Cheap per-call market quote (0.01 USDC via x402).",
-  inputSchema: { address: z.string().describe("ERC-20 token contract address (0x…, 42 chars)") },
+  title: "Token spot price + liquidity (paid, Base or Solana)",
+  description: "Live DEX spot price, liquidity, FDV, market cap and 24h volume for any token by contract address — EVM (Base/etc.) or Solana mint. Highest-liquidity pair. Cheap per-call market quote (0.01 USDC via x402).",
+  inputSchema: { address: z.string().describe("Token contract address: EVM (0x…, 42 hex) or Solana base58 mint (32-44 chars)") },
 }, async ({ address }) => {
-  if (typeof address !== "string" || !/^0x[a-fA-F0-9]{40}$/.test(address.trim()))
-    return { content: [{ type: "text", text: JSON.stringify({ error: "address must be a 0x EVM token contract (42 chars)" }) }], isError: true };
-  const price = await fetchPrice(address.trim());
+  const a = typeof address === "string" ? address.trim() : "";
+  if (!isTokenAddress(a))
+    return { content: [{ type: "text", text: JSON.stringify({ error: "address must be an EVM contract (0x + 42 hex) or a Solana base58 mint" }) }], isError: true };
+  const price = await fetchPrice(a);
   return { content: [{ type: "text", text: JSON.stringify(price, null, 2) }] };
 });
 mcp.registerTool("search_tokens", {
@@ -175,15 +187,15 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
   "GET /price": {
     accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
-    description: "Live DEX spot price + liquidity for a Base ERC-20 token by contract address (query ?address=0x..). Cheap per-call market quote. — $0.01 USDC",
+    description: "Live DEX spot price + liquidity + FDV + 24h volume for any token by contract address (query ?address=0x.. or a Solana mint); returns the highest-liquidity pair. Cheap per-call market quote. — $0.01 USDC",
     mimeType: "application/json",
-    tags: ["price", "defi", "market-data", "base", "token", "liquidity"],
+    tags: ["price", "defi", "market-data", "base", "solana", "token", "liquidity", "quote"],
     extensions: {
       ...declareDiscoveryExtension({
         method: "GET",
-        input: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" },
-        inputSchema: { type: "object", properties: { address: { type: "string", description: "ERC-20 token contract address (0x…, 42 chars)" } }, required: ["address"] },
-        output: { example: { found: true, symbol: "USDC", priceUsd: "0.9999", liquidityUsd: 111659.09, fdv: 0, chainId: "base", source: "dexscreener", ts: "2026-09-20T00:00:00.000Z" } },
+        input: { address: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263" },
+        inputSchema: { type: "object", properties: { address: { type: "string", description: "Token contract address: EVM (0x…, 42 hex) or Solana base58 mint (32-44 chars)" } }, required: ["address"] },
+        output: { example: { found: true, symbol: "BONK", priceUsd: "0.000003010", liquidityUsd: 290132, fdv: 0, marketCap: 0, chainId: "solana", source: "dexscreener", ts: "2026-09-20T00:00:00.000Z" } },
       }),
     },
   },
@@ -250,7 +262,7 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
   protocol: "x402 (HTTP 402)",
   pricing: { currency: "USDC", network: NETWORK, endpoints: [
     { path: "/audit", method: "POST", price: PRICE },
-    { path: "/price", method: "GET", price: PRICE_DATA, note: "token spot price by ?address=0x.." },
+    { path: "/price", method: "GET", price: PRICE_DATA, note: "token spot price by ?address= (EVM 0x or Solana mint)" },
     { path: "/search_tokens", method: "GET", price: PRICE_DATA, note: "token search by ?q=name-or-symbol" },
     { path: "/mcp", method: "POST", price: PRICE, note: "per tools/call audit_bot_code" },
   ], freeEndpoints: ["/", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
@@ -276,10 +288,10 @@ app.get("/openapi.json", (_req, res) => res.json({
       properties: { code: { type: "string", description: "one JS/TS file" }, filename: { type: "string" } }, required: ["code"] } } } },
     responses: { 200: { description: "findings[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
   } }, "/price": { get: {
-    summary: "Live Base token spot price + liquidity by contract address (paid via x402)",
+    summary: "Live token spot price + liquidity by contract address, EVM or Solana (paid via x402)",
     "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.01" } },
     security: [{ x402: [] }],
-    parameters: [{ name: "address", in: "query", required: true, description: "ERC-20 token contract address (0x…, 42 chars)", schema: { type: "string" } }],
+    parameters: [{ name: "address", in: "query", required: true, description: "Token contract address: EVM (0x…, 42 hex) or Solana base58 mint (32-44 chars)", schema: { type: "string" } }],
     responses: { 200: { description: "priceUsd/liquidity/fdv after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
   } }, "/search_tokens": { get: {
     summary: "Search crypto tokens by name/symbol; returns highest-liquidity matched pairs (paid via x402)",
@@ -299,7 +311,7 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "Facilitator: " + FACILITATOR_URL, "",
   "## Endpoints",
   "- `POST /audit` (paid): body `{ \"code\": \"<file>\", \"filename\": \"bot.js\" }` -> `{ signalCount, findings[] }`. Unpaid -> HTTP 402.",
-  `- \`GET /price?address=0x..\` (paid, ${PRICE_DATA}): live DEX spot price + liquidity + FDV + 24h volume for a Base ERC-20 token by contract address.`,
+  `- \`GET /price?address=0x..\` (paid, ${PRICE_DATA}): live DEX spot price + liquidity + FDV + market cap + 24h volume for any token by address — EVM (Base/etc.) or Solana mint; highest-liquidity pair.`,
   `- \`GET /search_tokens?q=name&limit=12\` (paid, ${PRICE_DATA}): search tokens by name/symbol -> highest-liquidity matched pairs (price/liquidity/FDV/volume across chains).`,
   "- `POST /mcp` (paid per tools/call `audit_bot_code`); MCP `demo_audit` + handshake are free.",
   "- `GET /`, `/health`, `/.well-known/x402-info` (free metadata)", "",
@@ -334,7 +346,7 @@ app.post("/audit", (req, res) => {
 // Paid market-data route: live DEX spot price for a Base token (only reached after settlement).
 app.get("/price", async (req, res) => {
   const address = String(req.query.address || "").trim();
-  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return res.status(400).json({ error: "query ?address= must be a 0x EVM token contract (42 chars)" });
+  if (!isTokenAddress(address)) return res.status(400).json({ error: "query ?address= must be an EVM contract (0x + 42 hex) or a Solana base58 mint" });
   try {
     res.json(await fetchPrice(address));
   } catch (e) {
