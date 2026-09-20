@@ -46,6 +46,38 @@ const before = g.rows[0].blockNumber;
 const g2 = await gasPrices(["base"]);
 check("gas is cached within TTL", g2.rows[0].blockNumber === before, `${before} -> ${g2.rows[0].blockNumber}`);
 
+// The gate itself, over HTTP: an unpaid call must 402 and the challenge must offer BOTH
+// settlement networks, and liveness probes must answer 405 rather than 404.
+const base = `http://127.0.0.1:${process.env.PORT || 10000}`;
+let up = false;
+for (let i = 0; i < 40 && !up; i++) {
+  up = await fetch(base + "/health").then((r) => r.ok).catch(() => false);
+  if (!up) await new Promise((r) => setTimeout(r, 250));
+}
+check("server is listening", up, base);
+const challengeOf = async (path, opts) => {
+  const r = await fetch(base + path, opts);
+  return { status: r.status, body: JSON.parse(Buffer.from(r.headers.get("payment-required") || "{}", "base64").toString()) };
+};
+const audit = await challengeOf("/audit", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+check("POST /audit unpaid -> 402", audit.status === 402, audit.status);
+const aNets = (audit.body.accepts || []).map((a) => a.network);
+const aPays = (audit.body.accepts || []).map((a) => a.payTo);
+console.log(`audit challenge networks=${aNets.join(",")} amounts=${(audit.body.accepts || []).map((a) => a.amount).join(",")}`);
+check("audit 402 offers two networks", aNets.length === 2, aNets.join(","));
+check("audit 402 offers Base", aNets.includes("eip155:8453"), aNets.join(","));
+check("audit 402 offers Solana mainnet", aNets.some((n) => n.startsWith("solana:5eykt")), aNets.join(","));
+check("audit payTo distinct per network", new Set(aPays).size === 2, aPays.join(","));
+check("audit payTo is one EVM + one base58", aPays.some((p) => /^0x[a-fA-F0-9]{40}$/.test(p)) && aPays.some((p) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(p)), aPays.join(","));
+check("audit priced 0.05 USDC on both", (audit.body.accepts || []).every((a) => a.amount === "50000"), JSON.stringify(audit.body.accepts?.map((a) => a.amount)));
+const data = await challengeOf("/markets");
+const dNets = (data.body.accepts || []).map((a) => a.network);
+check("GET /markets unpaid -> 402", data.status === 402, data.status);
+check("data 402 is dual-network too", dNets.length === 2, dNets.join(","));
+check("data priced 0.01 USDC on both", (data.body.accepts || []).every((a) => a.amount === "10000"), JSON.stringify(data.body.accepts?.map((a) => a.amount)));
+const mcpGet = await fetch(base + "/mcp");
+check("GET /mcp -> 405 with Allow: POST", mcpGet.status === 405 && mcpGet.headers.get("allow") === "POST", `${mcpGet.status}/${mcpGet.headers.get("allow")}`);
+
 if (fails.length) {
   console.log(`\nSELFTEST FAIL (${fails.length}): ${fails.join(", ")}`);
   process.exit(1);
