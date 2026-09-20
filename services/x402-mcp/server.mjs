@@ -111,6 +111,7 @@ httpServer.requiresPayment = function (context) {
 };
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(express.json({ limit: "2mb" }));
 
 // ---- free metadata (registered BEFORE the payment gate) ----
