@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.kaminariouji/x402-audit-agent",
+  "title": "Crypto Bot Honesty Audit (x402 paid)",
+  "description": "x402 pay-per-call audit: finds crypto-bot bugs that fake earnings. 0.05 USDC on Base; demo free.",
+  "version": "1.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://labored-safari-islamic.ngrok-free.dev/mcp"
+    }
+  ]
+}
