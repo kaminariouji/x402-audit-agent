@@ -21,8 +21,12 @@ const { scanText } = require(path.join(__dirname, "audit-bot-honesty.cjs"));
 const PAY_TO = process.env.X402_PAY_TO || "0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b";
 const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || "https://facilitator.payai.network";
 const NETWORK = process.env.X402_NETWORK || "eip155:8453";
-const PRICE = process.env.X402_PRICE || "$0.05";
-const PRICE_DATA = process.env.X402_PRICE_DATA || "$0.01"; // per-call price for the market-data route
+const PRICE = process.env.X402_PRICE || "$0.01";
+// Pricing comes from the measured market, not guesswork: across all 6,605 resources cataloged by
+// our facilitator the median call is $0.005, p75 is $0.02 and 52% of the market sits at or below
+// $0.005 — a $0.05 audit was in the most expensive 17% of the ecosystem, so commodity quotes are
+// priced at $0.001 and the differentiated audit at $0.01 (both env-overridable).
+const PRICE_DATA = process.env.X402_PRICE_DATA || "$0.001"; // per-call price for the market-data route
 const PORT = Number(process.env.PORT || 10000); // Render injects PORT
 // Public origin used in discovery metadata (OpenAPI servers, x402 resource fan-out).
 const PUBLIC_URL = (process.env.X402_PUBLIC_URL || "https://labored-safari-islamic.ngrok-free.dev").replace(/\/+$/, "");
@@ -384,7 +388,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     accepts: acceptsFor(PRICE_DATA),
     serviceName: SERVICE_NAME,
     iconUrl: ICON_URL,
-    description: "Live DEX spot price + liquidity + FDV + 24h volume for any token by contract address (query ?address=0x.. or a Solana mint); returns the highest-liquidity pair. Cheap per-call market quote. — $0.01 USDC",
+    description: `Live DEX spot price + liquidity + FDV + 24h volume for any token by contract address (query ?address=0x.. or a Solana mint); returns the highest-liquidity pair. Cheap per-call market quote. — ${PRICE_DATA} USDC`,
     mimeType: "application/json",
     tags: ["price", "token", "market-data", "quote", "crypto"],
     extensions: {
@@ -400,7 +404,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     accepts: acceptsFor(PRICE_DATA),
     serviceName: SERVICE_NAME,
     iconUrl: ICON_URL,
-    description: "Search crypto tokens by name/symbol (query ?q=pepe&limit=12); returns highest-liquidity matched pairs with price, liquidity, FDV and 24h volume. Cheap per-call market lookup. — $0.01 USDC",
+    description: `Search crypto tokens by name/symbol (query ?q=pepe&limit=12); returns highest-liquidity matched pairs with price, liquidity, FDV and 24h volume. Cheap per-call market lookup. — ${PRICE_DATA} USDC`,
     mimeType: "application/json",
     tags: ["token", "search", "price", "market-data", "crypto"],
     extensions: {
@@ -416,7 +420,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     accepts: acceptsFor(PRICE_DATA),
     serviceName: SERVICE_NAME,
     iconUrl: ICON_URL,
-    description: "Top coins by market cap: price, market cap, 24h volume, 1h/24h/7d change (query ?vs=usd&limit=25). Keyless pay-per-call market table for agents. — $0.01 USDC",
+    description: `Top coins by market cap: price, market cap, 24h volume, 1h/24h/7d change (query ?vs=usd&limit=25). Keyless pay-per-call market table for agents. — ${PRICE_DATA} USDC`,
     mimeType: "application/json",
     tags: ["market-cap", "price", "market-data", "crypto", "quote"],
     extensions: {
@@ -432,7 +436,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     accepts: acceptsFor(PRICE_DATA),
     serviceName: SERVICE_NAME,
     iconUrl: ICON_URL,
-    description: "DeFi value-locked ranking per chain (query ?limit=25): TVL in USD plus chain id and gas token. — $0.01 USDC",
+    description: `DeFi value-locked ranking per chain (query ?limit=25): TVL in USD plus chain id and gas token. — ${PRICE_DATA} USDC`,
     mimeType: "application/json",
     tags: ["tvl", "defi", "market-data", "chains", "crypto"],
     extensions: {
@@ -448,7 +452,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     accepts: acceptsFor(PRICE_DATA),
     serviceName: SERVICE_NAME,
     iconUrl: ICON_URL,
-    description: "USD-pegged stablecoin supply by asset, peg mechanism and chain count (query ?limit=20). — $0.01 USDC",
+    description: `USD-pegged stablecoin supply by asset, peg mechanism and chain count (query ?limit=20). — ${PRICE_DATA} USDC`,
     mimeType: "application/json",
     tags: ["stablecoins", "usdc", "peg", "supply", "market-data"],
     extensions: {
@@ -464,7 +468,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     accepts: acceptsFor(PRICE_DATA),
     serviceName: SERVICE_NAME,
     iconUrl: ICON_URL,
-    description: "Currently promoted DEX tokens with live price, liquidity and 24h volume (query ?limit=10&chain=base|solana|..). Note: boosts are paid promotions by token projects. — $0.01 USDC",
+    description: `Currently promoted DEX tokens with live price, liquidity and 24h volume (query ?limit=10&chain=base|solana|..). Note: boosts are paid promotions by token projects. — ${PRICE_DATA} USDC`,
     mimeType: "application/json",
     tags: ["trending", "dex", "token", "solana", "market-data"],
     extensions: {
@@ -480,7 +484,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     accepts: acceptsFor(PRICE_DATA),
     serviceName: SERVICE_NAME,
     iconUrl: ICON_URL,
-    description: "Live gas + base fee in gwei for Base and Arbitrum from public RPC (query ?chains=base,arbitrum). Costs a transaction before you send it. — $0.01 USDC",
+    description: `Live gas + base fee in gwei for Base and Arbitrum from public RPC (query ?chains=base,arbitrum). Costs a transaction before you send it. — ${PRICE_DATA} USDC`,
     mimeType: "application/json",
     tags: ["gas", "fees", "base", "arbitrum", "market-data"],
     extensions: {
@@ -525,7 +529,7 @@ app.use((req, res, next) => {
 app.get("/health", (_req, res) => res.json({ ok: true, kind: "mcp+http", ...PAYMENT_INFO }));
 app.get("/", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
-  endpoints: { paid: ["POST /audit (crypto-bot honesty scan, $0.05)", "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "GET /markets?vs=usd&limit=25 (top coins by market cap)", "GET /tvl?limit=25 (chain TVL ranking)", "GET /stablecoins?limit=20 (pegged supply)", "GET /trending?limit=10 (promoted DEX tokens with quotes)", "GET /gas?chains=base,arbitrum (live gwei)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
+  endpoints: { paid: [`POST /audit (crypto-bot honesty scan, ${PRICE})`, "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "GET /markets?vs=usd&limit=25 (top coins by market cap)", "GET /tvl?limit=25 (chain TVL ranking)", "GET /stablecoins?limit=20 (pegged supply)", "GET /trending?limit=10 (promoted DEX tokens with quotes)", "GET /gas?chains=base,arbitrum (live gwei)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
   ...PAYMENT_INFO,
 }));
 app.get("/audit", (_req, res) => res.status(405).json({
@@ -549,7 +553,7 @@ app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
     version: 1,
     resources: [`${PUBLIC_URL}/audit`, ...[...PAID_DATA_PATHS].map((p) => PUBLIC_URL + p)],
     ownershipProofs: [PAY_TO],
-    instructions: "Pay-per-call x402 USDC on Base or Solana, no account and no API key. POST /audit for a crypto-bot honesty scan; GET /price?address=0x.., /search_tokens?q=.., /markets, /tvl, /stablecoins, /trending, /gas for market data at $0.01; MCP tool audit_bot_code on POST /mcp.",
+    instructions: `Pay-per-call x402 USDC on Base or Solana, no account and no API key. POST /audit for a crypto-bot honesty scan; GET /price?address=0x.., /search_tokens?q=.., /markets, /tvl, /stablecoins, /trending, /gas for market data at ${PRICE_DATA}; MCP tool audit_bot_code on POST /mcp.`,
   });
 });
 // Catalogers (BrickBlueBot, payai-style spiders) GET this exact path for the machine-readable
@@ -619,20 +623,20 @@ app.get("/openapi.json", (_req, res) => res.json({
   components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "X-PAYMENT", description: `x402 USDC payment on ${NETWORK} or ${SOLANA_NETWORK}; the 402 challenge lists both accepts. Settle one, then resend with the X-PAYMENT header.` } } },
   paths: { "/audit": { post: {
     summary: "Audit a crypto-bot source file (paid via x402)",
-    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.05" } },
+    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: PRICE.slice(1) } },
     security: [{ x402: [] }],
     requestBody: { required: true, content: { "application/json": { schema: { type: "object",
       properties: { code: { type: "string", description: "one JS/TS file" }, filename: { type: "string" } }, required: ["code"] } } } },
     responses: { 200: { description: "findings[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
   } }, "/price": { get: {
     summary: "Live token spot price + liquidity by contract address, EVM or Solana (paid via x402)",
-    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.01" } },
+    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: PRICE_DATA.slice(1) } },
     security: [{ x402: [] }],
     parameters: [{ name: "address", in: "query", required: true, description: "Token contract address: EVM (0x…, 42 hex) or Solana base58 mint (32-44 chars)", schema: { type: "string" } }],
     responses: { 200: { description: "priceUsd/liquidity/fdv after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
   } }, "/search_tokens": { get: {
     summary: "Search crypto tokens by name/symbol; returns highest-liquidity matched pairs (paid via x402)",
-    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.01" } },
+    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: PRICE_DATA.slice(1) } },
     security: [{ x402: [] }],
     parameters: [
       { name: "q", in: "query", required: true, description: "token name or symbol to search (1-64 chars)", schema: { type: "string" } },
@@ -641,7 +645,7 @@ app.get("/openapi.json", (_req, res) => res.json({
     responses: { 200: { description: "results[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
   } }, ...Object.fromEntries(Object.entries(DATA_ROUTE_SPEC).map(([p, s]) => [p, { get: {
     summary: s.summary,
-    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.01" } },
+    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: PRICE_DATA.slice(1) } },
     security: [{ x402: [] }],
     parameters: s.params.map(([name, required, description, type]) => ({ name, in: "query", required, description, schema: { type } })),
     responses: { 200: { description: "rows[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
