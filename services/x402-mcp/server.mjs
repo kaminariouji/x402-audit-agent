@@ -66,7 +66,25 @@ mcp.registerTool("demo_audit", {
 });
 
 // ---- x402 resource server ----
-const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
+// Default facilitator (payai) is keyless and serves real Base-USDC payments today.
+// To get indexed into the Coinbase x402 Bazaar (23k+ resources, where buyer agents
+// search), settlement must route through the CDP Facilitator: set
+// X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402 and
+// X402_FACILITATOR_HEADERS to a JSON header map (CDP API-key auth) from a free
+// Coinbase CDP key. No key -> unchanged keyless behavior. Secrets stay in env, never in code.
+const FACILITATOR_HEADERS = (() => {
+  try { return process.env.X402_FACILITATOR_HEADERS ? JSON.parse(process.env.X402_FACILITATOR_HEADERS) : null; }
+  catch { console.error("[x402] X402_FACILITATOR_HEADERS is not valid JSON; ignoring"); return null; }
+})();
+const facilitatorClient = FACILITATOR_HEADERS
+  ? new HTTPFacilitatorClient({
+      url: FACILITATOR_URL,
+      // Facilitator client keys auth by request path; apply the same headers to each.
+      createAuthHeaders: async () => ({
+        verify: FACILITATOR_HEADERS, settle: FACILITATOR_HEADERS, supported: FACILITATOR_HEADERS,
+      }),
+    })
+  : new HTTPFacilitatorClient({ url: FACILITATOR_URL });
 const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWORK, new ExactEvmScheme());
 const httpServer = new x402HTTPResourceServer(resourceServer, {
   "POST /mcp": {
