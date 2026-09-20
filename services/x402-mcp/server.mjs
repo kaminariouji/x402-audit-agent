@@ -188,7 +188,7 @@ app.get("/openapi.json", (_req, res) => res.json({
     title: "crypto-bot-honesty-audit", version: "1.0.0",
     description: "Pay-per-call x402 agent: scans one JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
     contact: { url: "https://github.com/kaminariouji/x402-audit-agent" },
-    "x-guidance": "Send POST /audit with body { code, filename }. Unpaid -> HTTP 402 with x402 terms; pay 0.05 USDC on Base (eip155:8453) and retry with the X-PAYMENT header. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
+    "x-guidance": "Two paid routes. (1) POST /audit body { code, filename } -> 0.05 USDC. (2) GET /price?address=0x.. (Base token spot price + liquidity) -> 0.01 USDC. Unpaid -> HTTP 402 with x402 terms; pay USDC on Base (eip155:8453) via an x402 client and retry. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
   },
   servers: [{ url: PUBLIC_URL }],
   security: [{ x402: [] }],
@@ -200,6 +200,12 @@ app.get("/openapi.json", (_req, res) => res.json({
     requestBody: { required: true, content: { "application/json": { schema: { type: "object",
       properties: { code: { type: "string", description: "one JS/TS file" }, filename: { type: "string" } }, required: ["code"] } } } },
     responses: { 200: { description: "findings[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
+  } }, "/price": { get: {
+    summary: "Live Base token spot price + liquidity by contract address (paid via x402)",
+    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.01" } },
+    security: [{ x402: [] }],
+    parameters: [{ name: "address", in: "query", required: true, description: "ERC-20 token contract address (0x…, 42 chars)", schema: { type: "string" } }],
+    responses: { 200: { description: "priceUsd/liquidity/fdv after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
   } } },
 }));
 app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
