@@ -21,6 +21,7 @@ const PAY_TO = process.env.X402_PAY_TO || "0x7C8A3c26bd579c5176A29a5a8Ae80536319
 const FACILITATOR_URL = process.env.X402_FACILITATOR_URL || "https://facilitator.payai.network";
 const NETWORK = process.env.X402_NETWORK || "eip155:8453";
 const PRICE = process.env.X402_PRICE || "$0.05";
+const PRICE_DATA = process.env.X402_PRICE_DATA || "$0.01"; // per-call price for the market-data route
 const PORT = Number(process.env.PORT || 10000); // Render injects PORT
 // Public origin used in discovery metadata (OpenAPI servers, x402 resource fan-out).
 const PUBLIC_URL = (process.env.X402_PUBLIC_URL || "https://labored-safari-islamic.ngrok-free.dev").replace(/\/+$/, "");
@@ -113,12 +114,27 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
       }),
     },
   },
+  "GET /price": {
+    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    description: "Live DEX spot price + liquidity for a Base ERC-20 token by contract address (query ?address=0x..). Cheap per-call market quote. — $0.01 USDC",
+    mimeType: "application/json",
+    tags: ["price", "defi", "market-data", "base", "token", "liquidity"],
+    extensions: {
+      ...declareDiscoveryExtension({
+        method: "GET",
+        input: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" },
+        inputSchema: { type: "object", properties: { address: { type: "string", description: "ERC-20 token contract address (0x…, 42 chars)" } }, required: ["address"] },
+        output: { example: { found: true, symbol: "USDC", priceUsd: "0.9999", liquidityUsd: 111659.09, fdv: 0, chainId: "base", source: "dexscreener", ts: "2026-09-20T00:00:00.000Z" } },
+      }),
+    },
+  },
 });
 // Gate the JSON-RPC method level on /mcp; /audit is gated by matching its route config.
 httpServer.requiresPayment = function (context) {
   const method = context.method || context.adapter?.getMethod?.();
   const path = context.path;
   if (method === "POST" && path === "/audit") return true;
+  if (method === "GET" && path === "/price") return true;
   if (method === "POST" && path === "/mcp") {
     const body = context.adapter?.getBody?.() || {};
     if (FREE_METHODS.has(body.method)) return false;
@@ -136,7 +152,7 @@ app.use(express.json({ limit: "2mb" }));
 app.get("/health", (_req, res) => res.json({ ok: true, kind: "mcp+http", payTo: PAY_TO, network: NETWORK, price: PRICE }));
 app.get("/", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
-  endpoints: { paid: ["POST /audit", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
+  endpoints: { paid: ["POST /audit", "GET /price?address=0x.. (token spot price)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
   price: PRICE, network: NETWORK, currency: "USDC", payTo: PAY_TO, protocol: "x402 (HTTP 402)",
 }));
 app.get("/audit", (_req, res) => res.status(405).json({
@@ -147,9 +163,9 @@ app.get("/audit", (_req, res) => res.status(405).json({
 app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
   res.json({
     version: 1,
-    resources: [`${PUBLIC_URL}/audit`],
+    resources: [`${PUBLIC_URL}/audit`, `${PUBLIC_URL}/price`],
     ownershipProofs: [PAY_TO],
-    instructions: "Pay-per-call x402 USDC on Base. POST /audit with an x402 payment; MCP tool audit_bot_code on POST /mcp.",
+    instructions: "Pay-per-call x402 USDC on Base. POST /audit with an x402 payment; GET /price?address=0x.. for a token quote; MCP tool audit_bot_code on POST /mcp.",
   });
 });
 app.get("/.well-known/x402-info", (_req, res) => res.json({
@@ -160,9 +176,10 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
   protocol: "x402 (HTTP 402)",
   pricing: { currency: "USDC", network: NETWORK, endpoints: [
     { path: "/audit", method: "POST", price: PRICE },
+    { path: "/price", method: "GET", price: PRICE_DATA, note: "token spot price by ?address=0x.." },
     { path: "/mcp", method: "POST", price: PRICE, note: "per tools/call audit_bot_code" },
   ], freeEndpoints: ["/", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
-  capabilities: ["analyze", "audit", "classify"],
+  capabilities: ["analyze", "audit", "classify", "market-data", "price"],
   payTo: PAY_TO,
 }));
 app.get("/openapi.json", (_req, res) => res.json({
@@ -221,6 +238,23 @@ app.post("/audit", (req, res) => {
   const findings = scanText(code, filename || "submitted.js");
   res.json({ scannedBytes: code.length, signalCount: findings.length, findings,
     disclaimer: "Static-analysis signals; each must be confirmed by reading the cited line. Not a guarantee of correctness or profitability." });
+});
+// Paid market-data route: live DEX spot price for a Base token (only reached after settlement).
+app.get("/price", async (req, res) => {
+  const address = String(req.query.address || "").trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return res.status(400).json({ error: "query ?address= must be a 0x EVM token contract (42 chars)" });
+  try {
+    const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, { headers: { accept: "application/json" } });
+    const j = await r.json().catch(() => ({}));
+    const pairs = (j.pairs || []).filter(p => p.chainId === "base").sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+    const p = pairs[0] || (j.pairs || [])[0];
+    if (!p) return res.json({ address, found: false, note: "no DEX pair found for this token", source: "dexscreener", ts: new Date().toISOString() });
+    res.json({ address, found: true, name: p.baseToken?.name, symbol: p.baseToken?.symbol,
+      priceUsd: p.priceUsd, liquidityUsd: p.liquidity?.usd, fdv: p.fdv, volume24h: p.volume?.h24,
+      chainId: p.chainId, dex: p.dexId, pairUrl: p.url, source: "dexscreener", ts: new Date().toISOString() });
+  } catch (e) {
+    res.status(502).json({ address, error: "upstream_price_lookup_failed", detail: String(e?.message || e) });
+  }
 });
 app.post("/mcp", async (req, res) => {
   try {
