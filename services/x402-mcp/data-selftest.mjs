@@ -78,6 +78,19 @@ check("data priced 0.01 USDC on both", (data.body.accepts || []).every((a) => a.
 const mcpGet = await fetch(base + "/mcp");
 check("GET /mcp -> 405 with Allow: POST", mcpGet.status === 405 && mcpGet.headers.get("allow") === "POST", `${mcpGet.status}/${mcpGet.headers.get("allow")}`);
 
+// Crawler conventions must be FREE (no 402) and complete, or catalogers skip the service.
+const disc = await fetch(base + "/discovery/resources");
+const dj = await disc.json().catch(() => ({}));
+check("GET /discovery/resources -> 200 free", disc.status === 200, disc.status);
+check("fan-out lists every paid route", dj.items?.length === 9, `${dj.items?.length}`);
+check("fan-out resources are absolute URLs", dj.resources?.every((r) => /^https:\/\//.test(r)), JSON.stringify(dj.resources?.slice(0, 2)));
+check("fan-out items each offer both networks", dj.items?.every((i) => i.accepts?.length === 2), "some items are single-network");
+check("fan-out audit is priced, market data separately", dj.items?.find((i) => i.resource?.endsWith("/audit"))?.accepts?.[0]?.price === "$0.05", dj.items?.[0]?.accepts?.[0]?.price);
+const rob = await fetch(base + "/robots.txt");
+const rt = await rob.text();
+check("GET /robots.txt -> 200 free", rob.status === 200, rob.status);
+check("robots allows all + points at llms.txt", /Allow: \//.test(rt) && /\/llms\.txt/.test(rt), rt.replace(/\n/g, " | "));
+
 if (fails.length) {
   console.log(`\nSELFTEST FAIL (${fails.length}): ${fails.join(", ")}`);
   process.exit(1);
