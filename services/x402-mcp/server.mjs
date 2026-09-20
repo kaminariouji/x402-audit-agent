@@ -28,6 +28,16 @@ const PUBLIC_URL = (process.env.X402_PUBLIC_URL || "https://labored-safari-islam
 
 const FREE_METHODS = new Set(["initialize", "notifications/initialized", "ping", "tools/list", "resources/list", "prompts/list"]);
 const FREE_TOOLS = new Set(["demo_audit"]);
+// Every GET route below the gate costs PRICE_DATA per call.
+const PAID_DATA_PATHS = new Set(["/price", "/search_tokens", "/markets", "/tvl", "/stablecoins", "/trending", "/gas"]);
+// Table used to emit the OpenAPI paths for the data routes.
+const DATA_ROUTE_SPEC = {
+  "/markets": { summary: "Top coins by market cap: price, market cap, volume, 1h/24h/7d change (paid via x402)", params: [["vs", false, "quote currency: usd, eur, gbp, jpy, btc, eth", "string"], ["limit", false, "rows 1-100 (default 25)", "number"]] },
+  "/tvl": { summary: "DeFi value-locked ranking per chain in USD (paid via x402)", params: [["limit", false, "rows 1-100 (default 25)", "number"]] },
+  "/stablecoins": { summary: "USD-pegged stablecoin supply by asset, peg mechanism and chain count (paid via x402)", params: [["limit", false, "rows 1-100 (default 20)", "number"]] },
+  "/trending": { summary: "Currently promoted DEX tokens enriched with live price, liquidity and 24h volume (paid via x402)", params: [["limit", false, "rows 1-50 (default 10)", "number"], ["chain", false, "optional chainId filter, e.g. base or solana", "string"]] },
+  "/gas": { summary: "Live gas and base fee in gwei for Base and Arbitrum from public RPC (paid via x402)", params: [["chains", false, "comma list from: base, arbitrum", "string"]] },
+};
 
 // ---- MCP server ----
 // Accept an EVM address (0x + 40 hex) OR a Solana base58 mint (32-44 chars). This keeps
@@ -79,8 +89,134 @@ async function searchTokens(rawQuery, limit) {
     .slice(0, limit);
   return { query: rawQuery, count: results.length, results, source: "dexscreener", ts: new Date().toISOString() };
 }
+
+// ---- market-data helpers for the paid routes ----
+// Every upstream host below is a compile-time constant and the variable part is validated or
+// percent-encoded, so a caller cannot steer a request off these hosts.
+const CACHE_MS = 30_000;
+const memo = new Map();
+async function cachedJson(key, url, init) {
+  const hit = memo.get(key);
+  if (hit && hit.exp > Date.now()) return hit.val;
+  const r = await fetch(url, init);
+  if (!r.ok) throw new Error(`upstream ${new URL(url).host} returned HTTP ${r.status}`);
+  const val = await r.json();
+  if (val && typeof val === "object" && !Array.isArray(val) && val.error) {
+    throw new Error(`upstream ${new URL(url).host} returned ${String(val.error).slice(0, 80)}`);
+  }
+  memo.set(key, { exp: Date.now() + CACHE_MS, val });
+  return val;
+}
+const UP = {
+  coingeckoMarkets: "https://api.coingecko.com/api/v3/coins/markets",
+  paprikaTickers: "https://api.coinpaprika.com/v1/tickers",
+  llamaChains: "https://api.llama.fi/v2/chains",
+  llamaStables: "https://stablecoins.llama.fi/stablecoins",
+  dexscreenerBoosts: "https://api.dexscreener.com/token-boosts/latest/v1",
+};
+// Caller picks a chain name out of this map — never a URL.
+const RPC = { base: "https://mainnet.base.org", arbitrum: "https://arb1.arbitrum.io/rpc" };
+const CURRENCIES = new Set(["usd", "eur", "gbp", "jpy", "btc", "eth"]);
+const TX_COST_CURRENCY = process.env.X402_TX_COST_CURRENCY || "usd";
+
+async function topMarkets(vs, limit) {
+  const gecko = `${UP.coingeckoMarkets}?vs_currency=${vs}&order=market_cap_desc&per_page=${limit}&page=1&sparkline=false&price_change_percentage=1h%2C24h%2C7d`;
+  try {
+    const j = await cachedJson(`cg:${vs}:${limit}`, gecko, { headers: { accept: "application/json" } });
+    return { source: "coingecko", rows: j.map((c) => ({
+      rank: c.market_cap_rank, id: c.id, symbol: c.symbol, name: c.name,
+      price: c.current_price, marketCap: c.market_cap, volume: c.total_volume,
+      circulating: c.circulating_supply, change1h: c.price_change_percentage_1h_in_currency,
+      change24h: c.price_change_percentage_24h_in_currency, change7d: c.price_change_percentage_7d_in_currency,
+    })) };
+  } catch (e) {
+    // CoinGecko rate-limits datacenter IPs; fall back so a paid call never fails on it.
+    const j = await cachedJson(`pap:${vs}:${limit}`, `${UP.paprikaTickers}?quotes=${vs}&limit=${Math.min(limit * 3, 200)}`, { headers: { accept: "application/json" } });
+    return { source: "coingecko-fallback-coinpaprika", note: String(e?.message || e), rows: j
+      .filter((c) => Number(c.rank) > 0).sort((a, b) => a.rank - b.rank).slice(0, limit).map((c) => ({
+        rank: c.rank, id: c.id, symbol: c.symbol, name: c.name, price: c.quotes?.[vs]?.price ?? null,
+        marketCap: c.quotes?.[vs]?.market_cap ?? null, volume: c.quotes?.[vs]?.volume_24h ?? null,
+        circulating: c.circulating_supply, change1h: null, change24h: c.quotes?.[vs]?.percent_change_24h ?? null,
+        change7d: c.quotes?.[vs]?.percent_change_7d ?? null,
+      })) };
+  }
+}
+
+async function chainTvl(limit) {
+  const j = await cachedJson("llama:chains", UP.llamaChains, { headers: { accept: "application/json" } });
+  const rows = j.filter((c) => Number(c.tvl) > 0).sort((a, b) => b.tvl - a.tvl).slice(0, limit)
+    .map((c) => ({ chain: c.name, chainId: c.chainId ?? null, tvl: Math.round(c.tvl), gasToken: c.tokenSymbol ?? null }));
+  return { source: "defillama", total: j.length, rows };
+}
+
+async function stablecoinSnapshot(limit) {
+  const j = await cachedJson("llama:stables", `${UP.llamaStables}?includePrices=false`, { headers: { accept: "application/json" } });
+  const rows = (j?.peggedAssets || []).map((a) => ({
+    name: a.name, symbol: a.symbol, pegType: a.peggedType || a.pegType || null,
+    pegMechanism: a.pegMechanism || null, circulating: a.circulating?.peggedUSD ?? null,
+    onChain: Object.keys(a.circulating?.byChainLatestTime || {}).length,
+  })).filter((r) => Number(r.circulating) > 0).sort((a, b) => b.circulating - a.circulating).slice(0, limit);
+  return { source: "defillama", note: "circulating is USD-pegged supply, not a redemption guarantee", rows };
+}
+
+// "What is heating up right now" — DexScreener paid boosts, enriched with one batched quote call
+// so the response carries price and liquidity instead of just boost counts.
+async function trendingBoosted(chain, limit) {
+  const all = await cachedJson("boost:latest", UP.dexscreenerBoosts, { headers: { accept: "application/json" } });
+  const scoped = chain ? all.filter((r) => r.chainId === chain) : all;
+  const top = scoped.slice(0, limit);
+  const byChain = new Map();
+  for (const r of top) {
+    if (!byChain.has(r.chainId)) byChain.set(r.chainId, []);
+    byChain.get(r.chainId).push(r.tokenAddress);
+  }
+  const quotes = new Map();
+  await Promise.all([...byChain].map(async ([cid, addrs]) => {
+    try {
+      const url = `https://api.dexscreener.com/tokens/v1/${encodeURIComponent(cid)}/${addrs.map((a) => encodeURIComponent(a)).join(",")}`;
+      const pairs = await cachedJson(`boostq:${cid}:${addrs.join(",")}`, url, { headers: { accept: "application/json" } });
+      for (const p of (Array.isArray(pairs) ? pairs : [])) {
+        const k = `${p.chainId}:${(p.baseToken?.address || "").toLowerCase()}`;
+        const cur = quotes.get(k);
+        if (!cur || (p.liquidity?.usd || 0) > (cur.liquidityUsd || 0)) {
+          quotes.set(k, { priceUsd: p.priceUsd, liquidityUsd: p.liquidity?.usd ?? null, volume24h: p.volume?.h24 ?? null, change24h: p.priceChange?.h24 ?? null, dex: p.dexId, pairUrl: p.url });
+        }
+      }
+    } catch { /* boosts still reported without a quote */ }
+  }));
+  return { source: "dexscreener", note: "boosts are paid promotions by token projects, not an endorsement or a ranking of quality",
+    count: top.length, rows: top.map((r) => ({
+      chainId: r.chainId, tokenAddress: r.tokenAddress, totalAmount: r.totalAmount,
+      latestTime: r.latestTime, description: typeof r.description === "string" ? r.description.slice(0, 140) : null,
+      url: r.url, ...((quotes.get(`${r.chainId}:${(r.tokenAddress || "").toLowerCase()}`) || {})),
+    })) };
+}
+
+async function gasPrices(chains) {
+  const rows = [];
+  for (const name of chains) {
+    const url = RPC[name];
+    const rpc = async (method, params) => {
+      const j = await cachedJson(`rpc:${name}:${method}`, url, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      if (j?.error) throw new Error(`${name}: ${String(j.error.message || j.error).slice(0, 80)}`);
+      return j.result;
+    };
+    const [gp, blk] = await Promise.all([rpc("eth_gasPrice", []), rpc("eth_getBlockByNumber", ["latest", false])]);
+    const gwei = (hex) => Number(BigInt(hex || "0x0")) / 1e9;
+    rows.push({
+      chain: name, gasPriceGwei: +gwei(gp).toFixed(4), baseFeeGwei: +gwei(blk?.baseFeePerGas).toFixed(4),
+      blockNumber: Number(BigInt(blk?.number || "0x0")),
+      maxFeeGwei: blk?.nextBaseFee ? +gwei(blk.nextBaseFee).toFixed(4) : null,
+    });
+  }
+  return { source: "public RPC", currency: TX_COST_CURRENCY, note: "gwei estimates from a public node; a simple transfer costs ~21000 gas", rows };
+}
+
 const mcp = new McpServer({ name: "crypto-bot-honesty-audit", version: "1.0.0" }, {
-  instructions: "Scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
+  instructions: "Pay-per-call x402 agent: scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned, plus keyless market data (token price, search, market cap table, chain TVL, stablecoin supply, trending tokens, gas).",
 });
 mcp.registerTool("audit_bot_code", {
   title: "Audit crypto-bot source for fake-earnings bugs",
@@ -136,6 +272,34 @@ mcp.registerTool("search_tokens", {
   const results = await searchTokens(q, Math.min(Math.max(Number(limit) || LEAN, 1), 25));
   return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
 });
+mcp.registerTool("top_markets", {
+  title: "Top coins by market cap (paid)",
+  description: "Market-cap table with price, market cap, 24h volume and 1h/24h/7d change. Public aggregator snapshot, not an oracle. Metered per call via x402.",
+  inputSchema: { vs: z.enum(["usd", "eur", "gbp", "jpy", "btc", "eth"]).optional().describe("quote currency"), limit: z.number().int().min(1).max(100).optional() },
+}, async ({ vs = "usd", limit = 25 }) => {
+  const out = await topMarkets(vs, limit);
+  return { content: [{ type: "text", text: JSON.stringify({ currency: vs, count: out.rows.length, rows: out.rows, source: out.source, caveat: "public aggregator snapshot, not an oracle", ts: new Date().toISOString() }, null, 2) }] };
+});
+mcp.registerTool("chain_tvl", {
+  title: "DeFi TVL ranked per chain (paid)",
+  description: "Value locked in USD per chain, ranked. TVL is a protocol-reported metric, not a risk measure. Metered per call via x402.",
+  inputSchema: { limit: z.number().int().min(1).max(100).optional() },
+}, async ({ limit = 25 }) => ({ content: [{ type: "text", text: JSON.stringify(await chainTvl(limit), null, 2) }] }));
+mcp.registerTool("stablecoin_supply", {
+  title: "USD-pegged stablecoin supply by asset (paid)",
+  description: "Circulating USD-pegged supply with peg mechanism and chain count. Metered per call via x402.",
+  inputSchema: { limit: z.number().int().min(1).max(100).optional() },
+}, async ({ limit = 20 }) => ({ content: [{ type: "text", text: JSON.stringify(await stablecoinSnapshot(limit), null, 2) }] }));
+mcp.registerTool("trending_tokens", {
+  title: "Promoted DEX tokens with live quotes (paid)",
+  description: "Tokens currently bought into by projects for DEX exposure, enriched with price, liquidity and 24h volume. Boosts are paid promotions, not an endorsement. Metered per call via x402.",
+  inputSchema: { limit: z.number().int().min(1).max(50).optional(), chain: z.string().max(32).optional().describe("chainId filter, e.g. base or solana") },
+}, async ({ limit = 10, chain }) => ({ content: [{ type: "text", text: JSON.stringify(await trendingBoosted(typeof chain === "string" ? chain.trim().slice(0, 32) : null, limit), null, 2) }] }));
+mcp.registerTool("gas_prices", {
+  title: "Live gas and base fee in gwei (paid)",
+  description: "Gas price, base fee and block height for Base and Arbitrum from public RPC — what a transaction costs before you send it. Metered per call via x402.",
+  inputSchema: { chains: z.array(z.enum(["base", "arbitrum"])).max(2).optional() },
+}, async ({ chains = ["base", "arbitrum"] }) => ({ content: [{ type: "text", text: JSON.stringify(await gasPrices(chains), null, 2) }] }));
 
 // ---- x402 resource server ----
 // Default facilitator (payai) is keyless and serves real Base-USDC payments today.
@@ -213,14 +377,83 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
       }),
     },
   },
+  "GET /markets": {
+    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    description: "Top coins by market cap: price, market cap, 24h volume, 1h/24h/7d change (query ?vs=usd&limit=25). Keyless pay-per-call market table for agents. — $0.01 USDC",
+    mimeType: "application/json",
+    tags: ["market-data", "price", "markets", "market-cap", "crypto", "quote"],
+    extensions: {
+      ...declareDiscoveryExtension({
+        method: "GET",
+        input: { vs: "usd", limit: 5 },
+        inputSchema: { type: "object", properties: { vs: { type: "string", description: "quote currency: usd, eur, gbp, jpy, btc or eth" }, limit: { type: "number", description: "rows 1-100 (default 25)" } } },
+        output: { example: { source: "coingecko", rows: [{ rank: 1, id: "bitcoin", symbol: "btc", name: "Bitcoin", price: 81098, marketCap: 1610000000000, volume: 30000000000, change24h: 1.2 }] } },
+      }),
+    },
+  },
+  "GET /tvl": {
+    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    description: "DeFi value-locked ranking per chain (query ?limit=25): TVL in USD plus chain id and gas token. — $0.01 USDC",
+    mimeType: "application/json",
+    tags: ["defi", "tvl", "market-data", "chains", "protocol-inventory"],
+    extensions: {
+      ...declareDiscoveryExtension({
+        method: "GET",
+        input: { limit: 5 },
+        inputSchema: { type: "object", properties: { limit: { type: "number", description: "rows 1-100 (default 25)" } } },
+        output: { example: { source: "defillama", total: 280, rows: [{ chain: "Tron", chainId: null, tvl: 5400000000, gasToken: "TRX" }] } },
+      }),
+    },
+  },
+  "GET /stablecoins": {
+    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    description: "USD-pegged stablecoin supply by asset, peg mechanism and chain count (query ?limit=20). — $0.01 USDC",
+    mimeType: "application/json",
+    tags: ["stablecoins", "defi", "market-data", "supply", "peg"],
+    extensions: {
+      ...declareDiscoveryExtension({
+        method: "GET",
+        input: { limit: 5 },
+        inputSchema: { type: "object", properties: { limit: { type: "number", description: "rows 1-100 (default 20)" } } },
+        output: { example: { source: "defillama", note: "circulating is USD-pegged supply, not a redemption guarantee", rows: [{ name: "Tether", symbol: "USDT", pegType: "peggedUSD", pegMechanism: "fiat-backed", circulating: 120000000000, onChain: 20 }] } },
+      }),
+    },
+  },
+  "GET /trending": {
+    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    description: "Currently promoted DEX tokens with live price, liquidity and 24h volume (query ?limit=10&chain=base|solana|..). Note: boosts are paid promotions by token projects. — $0.01 USDC",
+    mimeType: "application/json",
+    tags: ["trending", "dex", "market-data", "tokens", "liquidity", "solana", "base"],
+    extensions: {
+      ...declareDiscoveryExtension({
+        method: "GET",
+        input: { limit: 5 },
+        inputSchema: { type: "object", properties: { limit: { type: "number", description: "rows 1-50 (default 10)" }, chain: { type: "string", description: "optional chainId filter, e.g. base or solana" } } },
+        output: { example: { source: "dexscreener", note: "boosts are paid promotions by token projects, not an endorsement", count: 5, rows: [{ chainId: "solana", tokenAddress: "DezX..", totalAmount: 50, priceUsd: "0.0004", liquidityUsd: 91000, volume24h: 240000, change24h: 12.5 }] } },
+      }),
+    },
+  },
+  "GET /gas": {
+    accepts: { scheme: "exact", price: PRICE_DATA, network: NETWORK, payTo: PAY_TO },
+    description: "Live gas + base fee in gwei for Base and Arbitrum from public RPC (query ?chains=base,arbitrum). Costs a transaction before you send it. — $0.01 USDC",
+    mimeType: "application/json",
+    tags: ["gas", "fees", "evm", "base", "arbitrum", "market-data", "transaction-cost"],
+    extensions: {
+      ...declareDiscoveryExtension({
+        method: "GET",
+        input: { chains: "base,arbitrum" },
+        inputSchema: { type: "object", properties: { chains: { type: "string", description: "comma list from: base, arbitrum (default both)" } } },
+        output: { example: { source: "public RPC", note: "gwei estimates from a public node; a simple transfer costs ~21000 gas", rows: [{ chain: "base", gasPriceGwei: 0.0061, baseFeeGwei: 0.005, blockNumber: 31200000 }] } },
+      }),
+    },
+  },
 });
 // Gate the JSON-RPC method level on /mcp; /audit is gated by matching its route config.
 httpServer.requiresPayment = function (context) {
   const method = context.method || context.adapter?.getMethod?.();
   const path = context.path;
   if (method === "POST" && path === "/audit") return true;
-  if (method === "GET" && path === "/price") return true;
-  if (method === "GET" && path === "/search_tokens") return true;
+  if (method === "GET" && PAID_DATA_PATHS.has(path)) return true;
   if (method === "POST" && path === "/mcp") {
     const body = context.adapter?.getBody?.() || {};
     if (FREE_METHODS.has(body.method)) return false;
@@ -234,29 +467,41 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "2mb" }));
 
+// Access log: without it we cannot tell a crawler from a payer. 2xx on a paid route = money moved.
+app.use((req, res, next) => {
+  res.on("finish", () => {
+    const q = req.originalUrl.length > 120 ? req.originalUrl.slice(0, 120) + "…" : req.originalUrl;
+    console.log(`[${new Date().toISOString()}] ${res.statusCode} ${req.method} ${q} ua=${(req.get("user-agent") || "-").slice(0, 60)}`);
+  });
+  next();
+});
+
 // ---- free metadata (registered BEFORE the payment gate) ----
 app.get("/health", (_req, res) => res.json({ ok: true, kind: "mcp+http", payTo: PAY_TO, network: NETWORK, price: PRICE }));
 app.get("/", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
-  endpoints: { paid: ["POST /audit", "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
+  endpoints: { paid: ["POST /audit (crypto-bot honesty scan, $0.05)", "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "GET /markets?vs=usd&limit=25 (top coins by market cap)", "GET /tvl?limit=25 (chain TVL ranking)", "GET /stablecoins?limit=20 (pegged supply)", "GET /trending?limit=10 (promoted DEX tokens with quotes)", "GET /gas?chains=base,arbitrum (live gwei)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
   price: PRICE, network: NETWORK, currency: "USDC", payTo: PAY_TO, protocol: "x402 (HTTP 402)",
 }));
 app.get("/audit", (_req, res) => res.status(405).json({
   error: "method_not_allowed", paid_endpoint: "POST /audit", price: PRICE, network: NETWORK, currency: "USDC", payTo: PAY_TO,
   probe: "this service is LIVE; send POST with an x402 payment to use it",
 }));
+// Agent Souk publisher verification (trust tier 2): proves this host belongs to our agent id.
+const SOUK_AGENT_ID = process.env.AGENTSOUK_AGENT_ID || "";
+app.get("/.well-known/agentsouk.txt", (_req, res) => res.type("text/plain").send(SOUK_AGENT_ID ? `agentsouk=${SOUK_AGENT_ID}\n` : "not configured\n"));
 // x402scan / Bazaar fan-out compat: list payable resources at their absolute URLs.
 app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
   res.json({
     version: 1,
-    resources: [`${PUBLIC_URL}/audit`, `${PUBLIC_URL}/price`, `${PUBLIC_URL}/search_tokens`],
+    resources: [`${PUBLIC_URL}/audit`, ...[...PAID_DATA_PATHS].map((p) => PUBLIC_URL + p)],
     ownershipProofs: [PAY_TO],
-    instructions: "Pay-per-call x402 USDC on Base. POST /audit with an x402 payment; GET /price?address=0x.. for a token quote; GET /search_tokens?q=.. for a token search; MCP tool audit_bot_code on POST /mcp.",
+    instructions: "Pay-per-call x402 USDC on Base, no account and no API key. POST /audit for a crypto-bot honesty scan; GET /price?address=0x.., /search_tokens?q=.., /markets, /tvl, /stablecoins, /trending, /gas for market data at $0.01; MCP tool audit_bot_code on POST /mcp.",
   });
 });
 app.get("/.well-known/x402-info", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
-  description: "Paid x402 agent (HTTP + MCP): scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned (testnet-as-USD, fake faucet endpoints, hardcoded earnings, auto-settled claim stubs).",
+  description: "Paid x402 agent (HTTP + MCP), no account and no API key: (1) scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned; (2) per-call crypto market data — token spot price, token search, top coins by market cap, chain TVL, stablecoin supply, trending DEX tokens, live gas.",
   documentationUrl: "https://github.com/kaminariouji/x402-audit-agent",
   contactUrl: "https://github.com/kaminariouji",
   protocol: "x402 (HTTP 402)",
@@ -264,18 +509,23 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
     { path: "/audit", method: "POST", price: PRICE },
     { path: "/price", method: "GET", price: PRICE_DATA, note: "token spot price by ?address= (EVM 0x or Solana mint)" },
     { path: "/search_tokens", method: "GET", price: PRICE_DATA, note: "token search by ?q=name-or-symbol" },
+    { path: "/markets", method: "GET", price: PRICE_DATA, note: "top coins by market cap by ?vs=usd&limit=25" },
+    { path: "/tvl", method: "GET", price: PRICE_DATA, note: "chain TVL ranking by ?limit=25" },
+    { path: "/stablecoins", method: "GET", price: PRICE_DATA, note: "USD-pegged supply by ?limit=20" },
+    { path: "/trending", method: "GET", price: PRICE_DATA, note: "promoted DEX tokens with quotes by ?limit=10&chain=" },
+    { path: "/gas", method: "GET", price: PRICE_DATA, note: "live gwei for base,arbitrum by ?chains=" },
     { path: "/mcp", method: "POST", price: PRICE, note: "per tools/call audit_bot_code" },
   ], freeEndpoints: ["/", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
-  capabilities: ["analyze", "audit", "classify", "market-data", "price", "search"],
+  capabilities: ["analyze", "audit", "classify", "market-data", "price", "search", "markets", "market-cap", "tvl", "defi", "stablecoins", "trending", "gas", "fees", "transaction-cost"],
   payTo: PAY_TO,
 }));
 app.get("/openapi.json", (_req, res) => res.json({
   openapi: "3.0.0",
   info: {
     title: "crypto-bot-honesty-audit", version: "1.0.0",
-    description: "Pay-per-call x402 agent: scans one JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
+    description: "Pay-per-call x402 agent: crypto-bot honesty scan plus keyless per-call crypto market data (price, search, market cap, TVL, stablecoins, trending, gas).",
     contact: { url: "https://github.com/kaminariouji/x402-audit-agent" },
-    "x-guidance": "Paid routes. (1) POST /audit body { code, filename } -> 0.05 USDC. (2) GET /price?address=0x.. (Base token spot price + liquidity) -> 0.01 USDC. (3) GET /search_tokens?q=name (token search, highest-liquidity pairs) -> 0.01 USDC. Unpaid -> HTTP 402 with x402 terms; pay USDC on Base (eip155:8453) via an x402 client and retry. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
+    "x-guidance": "Paid routes, no signup and no API key. (1) POST /audit body { code, filename } -> 0.05 USDC. (2) GET /price?address=0x.. -> 0.01 USDC. (3) GET /search_tokens?q=name -> 0.01 USDC. (4) GET /markets?vs=usd&limit=25, /tvl?limit=25, /stablecoins?limit=20, /trending?limit=10&chain=base, /gas?chains=base,arbitrum -> 0.01 USDC each. Unpaid -> HTTP 402 with x402 terms; pay USDC on Base (eip155:8453) via an x402 client and retry. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
   },
   servers: [{ url: PUBLIC_URL }],
   security: [{ x402: [] }],
@@ -302,7 +552,13 @@ app.get("/openapi.json", (_req, res) => res.json({
       { name: "limit", in: "query", required: false, description: "max results 1-25", schema: { type: "number" } },
     ],
     responses: { 200: { description: "results[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
-  } } },
+  } }, ...Object.fromEntries(Object.entries(DATA_ROUTE_SPEC).map(([p, s]) => [p, { get: {
+    summary: s.summary,
+    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: "0.01" } },
+    security: [{ x402: [] }],
+    parameters: s.params.map(([name, required, description, type]) => ({ name, in: "query", required, description, schema: { type } })),
+    responses: { 200: { description: "rows[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
+  } }])), },
 }));
 app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "# crypto-bot-honesty-audit", "",
@@ -313,6 +569,11 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "- `POST /audit` (paid): body `{ \"code\": \"<file>\", \"filename\": \"bot.js\" }` -> `{ signalCount, findings[] }`. Unpaid -> HTTP 402.",
   `- \`GET /price?address=0x..\` (paid, ${PRICE_DATA}): live DEX spot price + liquidity + FDV + market cap + 24h volume for any token by address — EVM (Base/etc.) or Solana mint; highest-liquidity pair.`,
   `- \`GET /search_tokens?q=name&limit=12\` (paid, ${PRICE_DATA}): search tokens by name/symbol -> highest-liquidity matched pairs (price/liquidity/FDV/volume across chains).`,
+  `- \`GET /markets?vs=usd&limit=25\` (paid, ${PRICE_DATA}): top coins by market cap with price, market cap, 24h volume and 1h/24h/7d change.`,
+  `- \`GET /tvl?limit=25\` (paid, ${PRICE_DATA}): DeFi value locked ranked per chain, in USD.`,
+  `- \`GET /stablecoins?limit=20\` (paid, ${PRICE_DATA}): USD-pegged supply by asset with peg mechanism and chain count.`,
+  `- \`GET /trending?limit=10&chain=base\` (paid, ${PRICE_DATA}): currently promoted DEX tokens with live price, liquidity and 24h volume.`,
+  `- \`GET /gas?chains=base,arbitrum\` (paid, ${PRICE_DATA}): live gas price and base fee in gwei from public RPC.`,
   "- `POST /mcp` (paid per tools/call `audit_bot_code`); MCP `demo_audit` + handshake are free.",
   "- `GET /`, `/health`, `/.well-known/x402-info` (free metadata)", "",
   "## Buyer quickstart (no signup — your x402 client auto-pays the 402 and retries)",
@@ -364,6 +625,53 @@ app.get("/search_tokens", async (req, res) => {
     res.status(502).json({ query: q, error: "upstream_search_lookup_failed", detail: String(e?.message || e) });
   }
 });
+// Paid market-table route (only reached after settlement).
+app.get("/markets", async (req, res) => {
+  const vs = String(req.query.vs || "usd").toLowerCase();
+  if (!CURRENCIES.has(vs)) return res.status(400).json({ error: "query ?vs= must be one of: " + [...CURRENCIES].join(", ") });
+  const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+  try {
+    const out = await topMarkets(vs, limit);
+    res.json({ currency: vs, count: out.rows.length, rows: out.rows, source: out.source, note: out.note, caveat: "public aggregator snapshot, not an oracle", ts: new Date().toISOString() });
+  } catch (e) {
+    res.status(502).json({ error: "upstream_markets_failed", detail: String(e?.message || e) });
+  }
+});
+app.get("/tvl", async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+  try {
+    res.json({ ...(await chainTvl(limit)), caveat: "TVL is a protocol-reported metric, not a risk measure", ts: new Date().toISOString() });
+  } catch (e) {
+    res.status(502).json({ error: "upstream_tvl_failed", detail: String(e?.message || e) });
+  }
+});
+app.get("/stablecoins", async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+  try {
+    res.json({ ...(await stablecoinSnapshot(limit)), ts: new Date().toISOString() });
+  } catch (e) {
+    res.status(502).json({ error: "upstream_stablecoins_failed", detail: String(e?.message || e) });
+  }
+});
+app.get("/trending", async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 50);
+  const chain = String(req.query.chain || "").trim().slice(0, 32) || null;
+  try {
+    res.json({ ...(await trendingBoosted(chain, limit)), ts: new Date().toISOString() });
+  } catch (e) {
+    res.status(502).json({ error: "upstream_trending_failed", detail: String(e?.message || e) });
+  }
+});
+app.get("/gas", async (req, res) => {
+  const wanted = String(req.query.chains || Object.keys(RPC).join(",")).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const bad = wanted.filter((c) => !RPC[c]);
+  if (bad.length) return res.status(400).json({ error: "unknown chain(s): " + bad.join(","), allowed: Object.keys(RPC) });
+  try {
+    res.json({ ...(await gasPrices(wanted)), ts: new Date().toISOString() });
+  } catch (e) {
+    res.status(502).json({ error: "upstream_rpc_failed", detail: String(e?.message || e) });
+  }
+});
 app.post("/mcp", async (req, res) => {
   try {
     const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -378,3 +686,6 @@ app.post("/mcp", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`=== x402 audit agent :${PORT} | USDC on ${NETWORK} -> ${PAY_TO} | ${PRICE}/call ===`);
 });
+
+// Exported for the data-route selftest (services/x402-mcp/data-selftest.mjs).
+export { topMarkets, chainTvl, stablecoinSnapshot, trendingBoosted, gasPrices, isTokenAddress };
