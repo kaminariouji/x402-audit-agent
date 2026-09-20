@@ -6,7 +6,7 @@ settles it with **USDC on Base or Solana** — the funds land directly in the
 seller wallet through the x402 facilitator.
 
 1. **Crypto-bot honesty audit** — scans one JS/TS source file for the bug
-   patterns that make a bot *report income it never earned*. `0.05` USDC/call.
+   patterns that make a bot *report income it never earned*. `0.01` USDC/call.
 2. **Keyless crypto market data** — price, search, market caps, chain TVL,
    stablecoin supply, trending DEX tokens, live gas, from public upstreams.
    `0.01` USDC/call.
@@ -52,7 +52,7 @@ see 5 of them fire on a known-bad sample and 0 on a hardened one):
 ## The paid call
 
 ```
-POST /audit            # 0.05 USDC — accepts eip155:8453 (Base) or solana:5eykt… (Solana)
+POST /audit            # 0.01 USDC — accepts eip155:8453 (Base) or solana:5eykt… (Solana)
 { "code": "<one JS/TS file>", "filename": "bot.js" }
 ```
 
