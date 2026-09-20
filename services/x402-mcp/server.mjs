@@ -30,6 +30,16 @@ const FREE_METHODS = new Set(["initialize", "notifications/initialized", "ping",
 const FREE_TOOLS = new Set(["demo_audit"]);
 
 // ---- MCP server ----
+async function fetchPrice(address) {
+  const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, { headers: { accept: "application/json" } });
+  const j = await r.json().catch(() => ({}));
+  const pairs = (j.pairs || []).filter(p => p.chainId === "base").sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+  const p = pairs[0] || (j.pairs || [])[0];
+  if (!p) return { address, found: false, note: "no DEX pair found for this token", source: "dexscreener", ts: new Date().toISOString() };
+  return { address, found: true, name: p.baseToken?.name, symbol: p.baseToken?.symbol,
+    priceUsd: p.priceUsd, liquidityUsd: p.liquidity?.usd, fdv: p.fdv, volume24h: p.volume?.h24,
+    chainId: p.chainId, dex: p.dexId, pairUrl: p.url, source: "dexscreener", ts: new Date().toISOString() };
+}
 const mcp = new McpServer({ name: "crypto-bot-honesty-audit", version: "1.0.0" }, {
   instructions: "Scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
 });
@@ -64,6 +74,16 @@ mcp.registerTool("demo_audit", {
   ].join("\n");
   const findings = scanText(sample, "sample-bot.js");
   return { content: [{ type: "text", text: JSON.stringify({ demo: true, signalCount: findings.length, findings }, null, 2) }] };
+});
+mcp.registerTool("get_token_price", {
+  title: "Base token spot price + liquidity (paid)",
+  description: "Live DEX spot price, liquidity, FDV and 24h volume for a Base ERC-20 token by contract address. Cheap per-call market quote (0.01 USDC via x402).",
+  inputSchema: { address: z.string().describe("ERC-20 token contract address (0x…, 42 chars)") },
+}, async ({ address }) => {
+  if (typeof address !== "string" || !/^0x[a-fA-F0-9]{40}$/.test(address.trim()))
+    return { content: [{ type: "text", text: JSON.stringify({ error: "address must be a 0x EVM token contract (42 chars)" }) }], isError: true };
+  const price = await fetchPrice(address.trim());
+  return { content: [{ type: "text", text: JSON.stringify(price, null, 2) }] };
 });
 
 // ---- x402 resource server ----
@@ -250,14 +270,7 @@ app.get("/price", async (req, res) => {
   const address = String(req.query.address || "").trim();
   if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return res.status(400).json({ error: "query ?address= must be a 0x EVM token contract (42 chars)" });
   try {
-    const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, { headers: { accept: "application/json" } });
-    const j = await r.json().catch(() => ({}));
-    const pairs = (j.pairs || []).filter(p => p.chainId === "base").sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
-    const p = pairs[0] || (j.pairs || [])[0];
-    if (!p) return res.json({ address, found: false, note: "no DEX pair found for this token", source: "dexscreener", ts: new Date().toISOString() });
-    res.json({ address, found: true, name: p.baseToken?.name, symbol: p.baseToken?.symbol,
-      priceUsd: p.priceUsd, liquidityUsd: p.liquidity?.usd, fdv: p.fdv, volume24h: p.volume?.h24,
-      chainId: p.chainId, dex: p.dexId, pairUrl: p.url, source: "dexscreener", ts: new Date().toISOString() });
+    res.json(await fetchPrice(address));
   } catch (e) {
     res.status(502).json({ address, error: "upstream_price_lookup_failed", detail: String(e?.message || e) });
   }
