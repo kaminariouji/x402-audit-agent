@@ -527,6 +527,40 @@ app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
     instructions: "Pay-per-call x402 USDC on Base or Solana, no account and no API key. POST /audit for a crypto-bot honesty scan; GET /price?address=0x.., /search_tokens?q=.., /markets, /tvl, /stablecoins, /trending, /gas for market data at $0.01; MCP tool audit_bot_code on POST /mcp.",
   });
 });
+// Catalogers (BrickBlueBot, payai-style spiders) GET this exact path for the machine-readable
+// resource list. Dual shape: `resources[]` of absolute URLs for x402scan, `items[]` carrying the
+// full 402 terms so a client can pay without first taking the 402.
+const PAYABLE_ROUTES = [
+  { path: "/audit", method: "POST", price: PRICE, description: "Crypto-bot honesty scan: findings[] with file:line for the bug patterns that make a bot report income it never earned." },
+  { path: "/price", method: "GET", price: PRICE_DATA, description: "Live DEX spot price, liquidity, FDV and volume for one token by contract address (EVM 0x.. or Solana base58 mint)." },
+  { path: "/search_tokens", method: "GET", price: PRICE_DATA, description: "Token search by name/symbol; highest-liquidity matching pairs." },
+  ...Object.entries(DATA_ROUTE_SPEC).map(([p, s]) => ({ path: p, method: "GET", price: PRICE_DATA, description: s.summary })),
+  { path: "/mcp", method: "POST", price: PRICE, description: "MCP Streamable-HTTP server (POST only). Paid tools/call: audit_bot_code and the market-data tools." },
+];
+app.get("/discovery/resources", (_req, res) => res.json({
+  version: 1,
+  server: "io.github.kaminariouji/x402-audit-agent",
+  name: "crypto-bot-honesty-audit",
+  protocol: "x402 (HTTP 402)",
+  currency: "USDC",
+  networks: [NETWORK, SOLANA_NETWORK],
+  payTo: { [NETWORK]: PAY_TO, [SOLANA_NETWORK]: PAY_TO_SOLANA },
+  facilitator: FACILITATOR_URL,
+  documentationUrl: "https://github.com/kaminariouji/x402-audit-agent",
+  resources: PAYABLE_ROUTES.map((r) => PUBLIC_URL + r.path),
+  items: PAYABLE_ROUTES.map((r) => ({
+    resource: PUBLIC_URL + r.path, method: r.method, x402Version: 2,
+    accepts: acceptsFor(r.price), serviceName: "crypto-bot-honesty-audit",
+    description: r.description, tags: ["crypto", "audit", "market-data", "agent"],
+  })),
+}));
+// Deliberately permissive: every route is public (payment is enforced per-request, not by
+// crawling policy), and the LLMs field points agents at the machine-readable service terms.
+app.get("/robots.txt", (_req, res) => res.type("text/plain").send([
+  "User-agent: *", "Allow: /", "", `LLMs: ${PUBLIC_URL}/llms.txt`,
+  `Sitemap hint: ${PUBLIC_URL}/.well-known/x402-info`,
+  `x402 resource fan-out: ${PUBLIC_URL}/discovery/resources`, "",
+].join("\n")));
 app.get("/.well-known/x402-info", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
   description: "Paid x402 agent (HTTP + MCP), no account and no API key: (1) scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned; (2) per-call crypto market data — token spot price, token search, top coins by market cap, chain TVL, stablecoin supply, trending DEX tokens, live gas.",
@@ -543,7 +577,7 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
     { path: "/trending", method: "GET", price: PRICE_DATA, note: "promoted DEX tokens with quotes by ?limit=10&chain=" },
     { path: "/gas", method: "GET", price: PRICE_DATA, note: "live gwei for base,arbitrum by ?chains=" },
     { path: "/mcp", method: "POST", price: PRICE, note: "per tools/call audit_bot_code" },
-  ], freeEndpoints: ["/", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
+  ], freeEndpoints: ["/", "/health", "/llms.txt", "/robots.txt", "/discovery/resources", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
   capabilities: ["analyze", "audit", "classify", "market-data", "price", "search", "markets", "market-cap", "tvl", "defi", "stablecoins", "trending", "gas", "fees", "transaction-cost"],
   payTo: { [NETWORK]: PAY_TO, [SOLANA_NETWORK]: PAY_TO_SOLANA },
 }));
@@ -603,7 +637,7 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   `- \`GET /trending?limit=10&chain=base\` (paid, ${PRICE_DATA}): currently promoted DEX tokens with live price, liquidity and 24h volume.`,
   `- \`GET /gas?chains=base,arbitrum\` (paid, ${PRICE_DATA}): live gas price and base fee in gwei from public RPC.`,
   "- `POST /mcp` (paid per tools/call `audit_bot_code`); MCP `demo_audit` + handshake are free.",
-  "- `GET /`, `/health`, `/.well-known/x402-info` (free metadata)", "",
+  "- `GET /`, `/health`, `/.well-known/x402-info`, `/discovery/resources`, `/robots.txt` (free metadata)", "",
   "## Buyer quickstart (no signup — your x402 client auto-pays the 402 and retries)",
   "Any funded wallet on Base or Solana can call this; you keep your own keys, we never hold funds. A standard x402 client catches our HTTP 402, reads the header, pays " + PRICE + " USDC on " + NETWORK + " or " + SOLANA_NETWORK + ", and retries transparently.", "",
   "```js",
