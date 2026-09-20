@@ -1,46 +1,78 @@
-# x402 Audit Agent — a paid API that tells you if your crypto bot is lying
+# Crypto-Bot Honesty Audit — a paid x402 agent (HTTP + MCP)
 
-An autonomous **x402** service: it exposes one paid HTTP endpoint and, once a
-buyer (human or AI agent) pays **0.05 USDC on Base**, it scans a JS/TS crypto-bot
-source file for the bug patterns that make a bot *report income it never earned*.
+A pay-per-call service that scans one JS/TS crypto-bot source file for the bug
+patterns that make a bot *report income it never earned*. A buyer (human or AI
+agent) pays **0.05 USDC on Base** and USDC settles straight into the seller
+wallet via the x402 facilitator — no Stripe, no signup, no human in the loop.
 
-It receives payment **programmatically** — no Stripe, no account, no human in the
-loop. USDC settles straight into the seller wallet via the x402 facilitator.
+Two surfaces, same scanner engine:
 
-## Why this exists
+- **HTTP:** `POST /audit`
+- **MCP (Model Context Protocol):** `POST /mcp`, tool `audit_bot_code` (paid) + `demo_audit` (free, no payment)
 
-Most "autonomous crypto earning bots" earn nothing. They look profitable because
-of code bugs. This agent detects exactly those:
+## Live endpoint
+
+```
+https://labored-safari-islamic.ngrok-free.dev
+```
+
+- `GET /health` → 200 (free)
+- `POST /audit` unpaid → `HTTP 402 Payment Required` (x402 terms + Bazaar discovery extension in the header)
+- MCP handshake (`initialize`, `tools/list`) and `demo_audit` → free; `audit_bot_code` → 402 until paid
+- Discovery metadata: `GET /.well-known/x402-info`, `/openapi.json`, `/llms.txt`; `GET /audit` → 405 live-probe
+
+## What it detects (real rule IDs)
+
+Every finding cites `file:line` so a human can confirm it. These are the actual
+rules in `audit-bot-honesty.cjs` (run `node audit-bot-honesty.cjs --selftest` to
+see 5 of them fire on a known-bad sample and 0 on a hardened one):
 
 | Rule | What it catches |
 |---|---|
-| `TESTNET_AS_USD` | testnet token claims (worth $0) summed into a `total_usd` |
-| `SILENT_ZERO_BALANCE` | a balance RPC that swallows failures and reports `0` |
-| `COOLDOWN_KEY_MISMATCH` | read key ≠ write key → cooldown never fires |
-| `SPECULATIVE_EARNINGS_TEXT` | docs/comments promising earnings with no funding path |
-| `FAUCET_GUESSWORK` | claims against faucet URLs that don't actually exist |
+| `TESTNET_AS_USD` | a token amount added to a `total_usd` with no testnet guard |
+| `BALANCE_FROM_FAILED_RPC` | RPC failure coerced to a confident balance of `0` |
+| `CHAIN_NOT_VERIFIED` | `eth_getBalance` used without asserting `eth_chainId` |
+| `ATTEMPT_COUNTED_AS_RESULT` | a counter incremented on *attempt*, not on success |
+| `COOLDOWN_KEY_MISMATCH` | state-map written with a prefix but read without it → cooldown never fires |
+| `SPECULATIVE_EARNINGS_TEXT` | `.md` copy promising profit from a zero-funded bot |
 
-## The paid endpoint
+## The paid call
 
 ```
-POST /audit            # 0.05 USDC on Base (eip155:8453) via x402
+POST /audit            # 0.05 USDC on eip155:8453 (Base) via x402
 { "code": "<one JS/TS file>", "filename": "bot.js" }
 ```
 
-Unpaid request → `HTTP 402 Payment Required` with x402 terms.
-Free endpoints: `GET /`, `GET /health`, `GET /.well-known/x402-info`.
+Returns `{ scannedBytes, signalCount, findings[] }` after settlement.
 
-## Run it
+## Run it (this is the deployable)
+
+The lean, self-contained service lives in `services/x402-mcp/`:
 
 ```bash
-node src/agents/x402-audit-service.mjs        # listens on :4021
-# expose publicly (demo):  cloudflared tunnel --url http://localhost:4021
+cd services/x402-mcp
+npm install
+node server.mjs            # honors $PORT (default 10000)
+
+# or Docker (runs as non-root, read-only fs, caps dropped):
+docker build -t x402-audit .
+docker run -p 127.0.0.1:10000:10000 --init --read-only --tmpfs /tmp \
+  --cap-drop ALL --security-opt no-new-privileges --memory 512m --cpus 0.5 \
+  x402-audit
 ```
 
-Env: `X402_PAY_TO` (receiving wallet), `X402_NETWORK`, `X402_PRICE`, `X402_FACILITATOR_URL`.
+Expose publicly with any tunnel, e.g. `ngrok http 10000 --url https://<your-domain>`.
+
+Env: `X402_PAY_TO` (receiving wallet, default = the project wallet), `X402_NETWORK`,
+`X402_PRICE`, `X402_FACILITATOR_URL`, `PORT`.
+
+> Note: an earlier prototype (`src/agents/x402-audit-service.mjs`, HTTP-only on
+> `:4021`) still exists in this repo; `services/x402-mcp/server.mjs` is the
+> current HTTP+MCP deployable and the one that is live.
 
 ## Honesty note
 
-This is a *receiving* mechanism. It can only earn when an external buyer chooses
-to pay. It does not, and will not, fabricate settlements or inflate earnings —
-that is the exact failure mode this tool detects in other bots.
+This is a *receiving* mechanism. It earns only when an external buyer chooses to
+pay. It does not, and will not, fabricate settlements or inflate earnings — that
+is the exact failure mode this tool detects in other bots. Findings are static
+signals requiring human confirmation, not verdicts.
