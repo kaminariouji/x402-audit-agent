@@ -11,8 +11,10 @@
     "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
   },
   "currency": "USDC",
-  "price": "0.05",
-  "priceData": "0.01",
+  "serviceName": "x402 Audit + Market Data",
+  "price": "0.01",
+  "priceData": "0.001",
+  "pricingNote": "Set inside the measured x402 market band: across the 6,605 resources cataloged by the payai facilitator the median call is $0.005 and 70% cost $0.01 or less.",
   "facilitator": "https://facilitator.payai.network",
   "liveEndpoints": {
     "audit_POST": "https://labored-safari-islamic.ngrok-free.dev/audit",
@@ -25,7 +27,9 @@
     "gas_GET": "https://labored-safari-islamic.ngrok-free.dev/gas",
     "mcp_POST": "https://labored-safari-islamic.ngrok-free.dev/mcp",
     "x402_info": "https://labored-safari-islamic.ngrok-free.dev/.well-known/x402-info",
-    "llms": "https://labored-safari-islamic.ngrok-free.dev/llms.txt"
+    "llms": "https://labored-safari-islamic.ngrok-free.dev/llms.txt",
+    "discovery_resources": "https://labored-safari-islamic.ngrok-free.dev/discovery/resources",
+    "robots": "https://labored-safari-islamic.ngrok-free.dev/robots.txt"
   },
   "source": "https://github.com/kaminariouji/x402-audit-agent",
   "note": "This is a durable, crawler-readable mirror of the service terms on github.io. Live compute + x402 settlement run at the ngrok URLs above."
