@@ -158,6 +158,79 @@ app.get("/.well-known/x402-info", (_req, res) => {
   });
 });
 
+// Some registries fetch x402.json instead of x402-info — expose both, same body.
+app.get(["/.well-known/x402.json", "/.well-known/x402"], (req, res) => {
+  res.redirect(301, "/.well-known/x402-info");
+});
+
+// OpenAPI description so discovery MCPs (x402search, EntRoute, Gatefare) can index the call.
+app.get("/openapi.json", (_req, res) => {
+  res.json({
+    openapi: "3.0.0",
+    info: {
+      title: "crypto-bot-honesty-audit",
+      version: "1.0.0",
+      description:
+        "Pay-per-call x402 agent: scans one JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
+    },
+    servers: [{ url: "https://github.com/kaminariouji/x402-audit-agent" }],
+    paths: {
+      "/audit": {
+        post: {
+          summary: "Audit a crypto-bot source file (paid via x402)",
+          "x-payment": {
+            required: true,
+            network: NETWORK,
+            currency: "USDC",
+            price: PRICE,
+            payTo: PAY_TO,
+            facilitator: FACILITATOR_URL,
+          },
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    code: { type: "string", description: "one JS/TS file" },
+                    filename: { type: "string" },
+                  },
+                  required: ["code"],
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: "findings[] with { rule, severity, line, text } after settlement" },
+            402: { description: "Payment required (x402 challenge)" },
+          },
+        },
+      },
+    },
+  });
+});
+
+// llms.txt: plain-text summary many agent crawlers read first.
+app.get("/llms.txt", (_req, res) => {
+  res.type("text/plain").send(
+    [
+      "# crypto-bot-honesty-audit",
+      "",
+      "> Pay-per-call x402 agent that scans one JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
+      "",
+      `Price: ${PRICE} USDC on ${NETWORK} (Base) via x402 HTTP-402. No signup, no API key. Recipient: ${PAY_TO}`,
+      "Facilitator: " + FACILITATOR_URL,
+      "",
+      "## Endpoints",
+      "- `POST /audit` (paid): body `{ \"code\": \"<file>\", \"filename\": \"bot.js\" }` -> `{ signalCount, findings[] }`. Unpaid -> HTTP 402.",
+      "- `GET /` , `GET /health` , `GET /.well-known/x402-info` (free metadata)",
+      "",
+      "Source: https://github.com/kaminariouji/x402-audit-agent",
+    ].join("\n")
+  );
+});
+
 // Paid: only reached after the facilitator confirms settlement.
 app.post("/audit", (req, res) => {
   const { code, filename } = req.body || {};
