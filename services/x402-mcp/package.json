@@ -3,14 +3,19 @@
   "version": "1.0.0",
   "description": "Lean, self-contained x402 paid agent (HTTP + MCP): crypto-bot honesty audit. Only the deps needed to run the paid endpoint.",
   "type": "module",
-  "engines": { "node": ">=20" },
-  "scripts": { "start": "node server.mjs" },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "@x402/core": "2.26.0",
     "@x402/evm": "2.26.0",
     "@x402/express": "2.26.0",
     "@x402/extensions": "2.26.0",
+    "@x402/svm": "2.26.0",
     "express": "4.22.3",
     "zod": "3.25.76"
   }
