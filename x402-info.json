@@ -1,13 +1,28 @@
 {
   "name": "crypto-bot-honesty-audit",
-  "description": "Paid x402 agent (HTTP + MCP): scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned.",
-  "payTo": "0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b",
-  "network": "eip155:8453",
+  "description": "Paid x402 agent (HTTP + MCP): crypto-bot honesty scan plus per-call keyless crypto market data (price, search, market caps, TVL, stablecoins, trending, gas).",
+  "payTo": {
+    "eip155:8453": "0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b",
+    "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "5NWSPyJChL2NJf3oEr6Mh4vLvG5S3qQmf5S4v7v8wEV4"
+  },
+  "networks": ["eip155:8453", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"],
+  "assets": {
+    "eip155:8453": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  },
   "currency": "USDC",
   "price": "0.05",
+  "priceData": "0.01",
   "facilitator": "https://facilitator.payai.network",
   "liveEndpoints": {
     "audit_POST": "https://labored-safari-islamic.ngrok-free.dev/audit",
+    "price_GET": "https://labored-safari-islamic.ngrok-free.dev/price",
+    "search_tokens_GET": "https://labored-safari-islamic.ngrok-free.dev/search_tokens",
+    "markets_GET": "https://labored-safari-islamic.ngrok-free.dev/markets",
+    "tvl_GET": "https://labored-safari-islamic.ngrok-free.dev/tvl",
+    "stablecoins_GET": "https://labored-safari-islamic.ngrok-free.dev/stablecoins",
+    "trending_GET": "https://labored-safari-islamic.ngrok-free.dev/trending",
+    "gas_GET": "https://labored-safari-islamic.ngrok-free.dev/gas",
     "mcp_POST": "https://labored-safari-islamic.ngrok-free.dev/mcp",
     "x402_info": "https://labored-safari-islamic.ngrok-free.dev/.well-known/x402-info",
     "llms": "https://labored-safari-islamic.ngrok-free.dev/llms.txt"
