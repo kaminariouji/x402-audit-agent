@@ -119,6 +119,38 @@ const guidance = String(oa.info?.["x-guidance"] ?? "");
 check("openapi guidance has no stale X-PAYMENT advice", !/resend with the X-PAYMENT header/.test(guidance), "still tells buyers to use X-PAYMENT");
 check("openapi guidance quotes the live prices", guidance.includes("$0.01") && guidance.includes("$0.001"), guidance.slice(0, 200));
 
+// x402scan's discovery contract (https://www.x402scan.com/discovery/spec.md) rejects an origin for
+// specific, silent reasons: protocols must be OBJECTS, a paid op with no response schema is "Input/Output
+// Schema Missing", amounts are decimal USD, and a free path that isn't marked security:[] gets probed and
+// logged as "No 402 challenge". Registration is the last step before a buyer can find us, so assert it.
+const paidOps = Object.entries(oa.paths || {}).flatMap(([p, item]) =>
+  Object.entries(item).filter(([, op]) => op?.["x-payment-info"]).map(([m, op]) => [`${m.toUpperCase()} ${p}`, op]));
+// 8 HTTP-paid ops. /mcp is declared free on purpose: its handshake answers 200 to an unpaid probe, so a
+// scanner that expects 402 there would fault the whole origin even though tools/call is metered.
+check("every paid route is declared in openapi", paidOps.length === 8, `${paidOps.length}: ${paidOps.map(([k]) => k).join(" ")}`);
+check("protocols are x402 objects, not bare strings", paidOps.every(([, o]) => JSON.stringify(o["x-payment-info"].protocols) === '[{"x402":{}}]'),
+  JSON.stringify(paidOps[0]?.[1]?.["x-payment-info"]?.protocols));
+check("prices are decimal USD at 6dp", paidOps.every(([, o]) => /^\d+\.\d{6}$/.test(String(o["x-payment-info"].price.amount))),
+  paidOps.map(([, o]) => o["x-payment-info"].price.amount).join(","));
+const auditDeclared = paidOps.find(([k]) => k === "POST /audit")?.[1]?.["x-payment-info"]?.price?.amount;
+const auditAtomic = (await challengeOf("/audit", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).body?.accepts?.[0]?.amount;
+check("openapi decimal USD agrees with runtime atomic units", String(Math.round(Number(auditDeclared) * 1e6)) === String(auditAtomic), `${auditDeclared} vs ${auditAtomic}`);
+check("every paid op has an output schema", paidOps.every(([, o]) => !!o.responses?.["200"]?.content?.["application/json"]?.schema),
+  paidOps.filter(([, o]) => !o.responses?.["200"]?.content?.["application/json"]?.schema).map(([k]) => k).join(" "));
+check("every paid op declares responses.402", paidOps.every(([, o]) => !!o.responses?.["402"]), "missing 402 response");
+check("every paid op has input (body or params)", paidOps.every(([, o]) => !!o.requestBody || (o.parameters || []).length > 0),
+  paidOps.filter(([, o]) => !o.requestBody && !(o.parameters || []).length).map(([k]) => k).join(" "));
+const freeOps = Object.entries(oa.paths || {}).flatMap(([p, item]) =>
+  Object.entries(item).filter(([, op]) => Array.isArray(op?.security) && op.security.length === 0).map(([m]) => `${m.toUpperCase()} ${p}`));
+check("free endpoints are declared security:[] (scanner skips them)", freeOps.length >= 9, `${freeOps.length}: ${freeOps.join(" ")}`);
+check("required top-level discovery fields present", oa.openapi === "3.1.0" && !!oa.info?.title && !!oa.info?.version && !!guidance && Object.keys(oa.paths || {}).length > 10,
+  `${oa.openapi} paths=${Object.keys(oa.paths || {}).length}`);
+// "Expected 402, got 400" is a listed registration failure: a malformed body must still reach the gate.
+const badJson = await fetch(base + "/audit", { method: "POST", headers: { "content-type": "application/json" }, body: "not json" });
+check("malformed JSON on a paid route -> 402, never 400", badJson.status === 402, String(badJson.status));
+const badJsonGet = await fetch(base + "/price", { method: "POST", headers: { "content-type": "application/json" }, body: "{{{" });
+check("malformed body on wrong verb still 405", badJsonGet.status === 405, String(badJsonGet.status));
+
 // MCP discovery: autonomous clients gate paid calls unless tools are annotated read-only, and any
 // stale price in a tool description contradicts the 402 the buyer actually receives.
 const mcpPost = async (obj, sid) => {
