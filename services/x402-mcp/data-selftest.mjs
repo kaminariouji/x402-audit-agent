@@ -119,6 +119,26 @@ const guidance = String(oa.info?.["x-guidance"] ?? "");
 check("openapi guidance has no stale X-PAYMENT advice", !/resend with the X-PAYMENT header/.test(guidance), "still tells buyers to use X-PAYMENT");
 check("openapi guidance quotes the live prices", guidance.includes("$0.01") && guidance.includes("$0.001"), guidance.slice(0, 200));
 
+// MCP discovery: autonomous clients gate paid calls unless tools are annotated read-only, and any
+// stale price in a tool description contradicts the 402 the buyer actually receives.
+const mcpPost = async (obj, sid) => {
+  const r = await fetch(base + "/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(sid ? { "mcp-session-id": sid } : {}) },
+    body: JSON.stringify(obj),
+  });
+  return { sid: r.headers.get("mcp-session-id"), text: await r.text(), status: r.status };
+};
+const ini = await mcpPost({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "selftest", version: "1" } } });
+check("MCP initialize -> 200", ini.status === 200, String(ini.status));
+await mcpPost({ jsonrpc: "2.0", method: "notifications/initialized" }, ini.sid);
+const tl = await mcpPost({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, ini.sid);
+const tools = (JSON.parse((tl.text.match(/^data: (.*)$/m) || [, tl.text])[1]).result?.tools) || [];
+check("tools/list returns 9 tools", tools.length === 9, String(tools.length));
+check("every tool annotated readOnly + non-destructive", tools.length === 9 && tools.every((t) => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint === false), JSON.stringify(tools.map((t) => t.annotations?.readOnlyHint)));
+check("no tool description contradicts the live price", !tools.some((t) => /0\.05 USDC|\(0\.01 USDC via x402\)/.test(t.description || "")), JSON.stringify(tools.filter((t) => /0\.05|0\.01 USDC via/.test(t.description || "")).map((t) => t.name)));
+check("every tool carries a human title", tools.every((t) => typeof t.title === "string" && t.title.length > 4), JSON.stringify(tools.filter((t) => !t.title).map((t) => t.name)));
+
 if (fails.length) {
   console.log(`\nSELFTEST FAIL (${fails.length}): ${fails.join(", ")}`);
   process.exit(1);
