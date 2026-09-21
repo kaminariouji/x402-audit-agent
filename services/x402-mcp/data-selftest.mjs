@@ -235,6 +235,28 @@ check("every response advertises Link: rel=api-catalog", /rel="api-catalog"/.tes
 const gateLink = (await fetch(base + "/gas")).headers.get("link") || "";
 check("the 402 challenge itself carries the catalog Link header", /rel="api-catalog"/.test(gateLink), gateLink);
 
+// /.well-known/x402 is the pricingUrl routers cite for their buyer record. It has to keep the plain
+// string `resources` array x402scan validates AND carry the exact terms a buyer needs, because Glimind's
+// payment.price/x402Details were null for every x402 entry in its index — an unpriced tool cannot be
+// auto-paid and cannot be filtered by maxPricePerCall.
+const wk = await (await fetch(base + "/.well-known/x402")).json();
+check("x402 fan-out keeps resources as absolute URL strings", Array.isArray(wk.resources) && wk.resources.length === 8
+  && wk.resources.every((u) => /^https?:\/\/[^/]+\/[a-z_]+$/.test(u)), JSON.stringify(wk.resources?.slice(0, 2)));
+check("x402 fan-out still proves ownership of the payout address", (wk.ownershipProofs || []).includes("0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b"), JSON.stringify(wk.ownershipProofs));
+check("x402 fan-out prices every payable route in atomic units", Array.isArray(wk.payments) && wk.payments.length === 9
+  && wk.payments.every((p) => /^\d+$/.test(String(p.priceAtomic)) && String(p.priceAtomic) === String(p.accepts?.[0]?.amount)),
+  JSON.stringify((wk.payments || []).map((p) => `${p.method} ${p.url?.split("/").pop()}=${p.priceAtomic}`)));
+check("x402 fan-out names asset + payTo + network per offer", wk.payments?.every((p) => p.accepts?.every((a) =>
+  a.network && a.asset && a.payTo && a.decimals === 6)), JSON.stringify(wk.payments?.[0]?.accepts));
+check("x402 fan-out agrees with the live 402 challenge on /price",
+  wk.payments?.find((p) => p.url.endsWith("/price"))?.accepts?.[0]?.amount
+    === (await challengeOf("/price")).body?.accepts?.[0]?.amount,
+  `doc=${wk.payments?.find((p) => p.url.endsWith("/price"))?.accepts?.[0]?.amount}`);
+check("x402 fan-out documents both wire names", wk.payments?.every((p) => p.paymentHeaders?.preferred === "PAYMENT-SIGNATURE"
+  && p.paymentHeaders?.legacy === "X-PAYMENT"), JSON.stringify(wk.payments?.[0]?.paymentHeaders));
+check("x402 fan-out declares per-call pricing usable by maxPrice filters", wk.pricing?.model === "per_call"
+  && wk.pricing?.minUsd === "0.001" && wk.pricing?.maxUsd === "0.01", JSON.stringify(wk.pricing));
+
 // The buyer-facing recipe in /llms.txt is what converts a 402 into money, and it previously told buyers
 // to use the v1 x402-fetch/X-PAYMENT path this origin ignores — a doc bug that 402s a payer forever.
 // So: assert the header name is right AND that the published code actually parses.

@@ -584,11 +584,33 @@ app.get("/mcp", (_req, res) => res.status(405).set("Allow", "POST").json({
 const SOUK_AGENT_ID = process.env.AGENTSOUK_AGENT_ID || "";
 app.get("/.well-known/agentsouk.txt", (_req, res) => res.type("text/plain").send(SOUK_AGENT_ID ? `agentsouk=${SOUK_AGENT_ID}\n` : "not configured\n"));
 // x402scan / Bazaar fan-out compat: list payable resources at their absolute URLs.
+// Routers (Glimind) publish a pricingUrl that points HERE, and their buyer record only carries an exact
+// price once the document states one: `price`/`pricePerCallUsd` were null and `x402Details` absent for
+// every x402 tool in the index, because bare URL strings priced nothing. `resources` stays a plain
+// string array (that is what x402scan's contract validates), and `payments[]` adds the full per-call
+// terms — amount in atomic units AND USD, CAIP-2 network, asset contract, payTo — so a buyer agent can
+// construct the payment from metadata alone, without first eating a 402.
+const OFFERED_NETS = [
+  { network: NETWORK, asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", payTo: PAY_TO, decimals: 6 },
+  { network: SOLANA_NETWORK, asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", payTo: PAY_TO_SOLANA, decimals: 6 },
+];
+const atomicOf = (usd) => String(Math.round(parseFloat(String(usd).replace(/[^0-9.]/g, "")) * 1e6));
+function termsFor(route) {
+  const amount = atomicOf(route.price);
+  return {
+    url: PUBLIC_URL + route.path, method: route.method, scheme: "exact", currency: "USDC",
+    priceUsd: route.price, priceAtomic: amount,
+    paymentHeaders: { preferred: "PAYMENT-SIGNATURE", legacy: "X-PAYMENT" },
+    accepts: OFFERED_NETS.map((n) => ({ ...n, amount, maxTimeoutSeconds: 300 })),
+  };
+}
 app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
   res.json({
     version: 1,
     resources: [`${PUBLIC_URL}/audit`, ...[...PAID_DATA_PATHS].map((p) => PUBLIC_URL + p)],
     ownershipProofs: [PAY_TO],
+    payments: PAYABLE_ROUTES.map(termsFor),
+    pricing: { model: "per_call", currency: "USDC", minUsd: PRICE_DATA.replace("$", ""), maxUsd: PRICE.replace("$", "") },
     instructions: `Pay-per-call x402 USDC on Base or Solana, no account and no API key. POST /audit for a crypto-bot honesty scan; GET /price?address=0x.., /search_tokens?q=.., /markets, /tvl, /stablecoins, /trending, /gas for market data at ${PRICE_DATA}; MCP tool audit_bot_code on POST /mcp.`,
   });
 });
