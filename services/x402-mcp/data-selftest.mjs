@@ -144,6 +144,11 @@ check("every paid op has an output schema", paidOps.every(([, o]) => !!o.respons
 check("every paid op declares responses.402", paidOps.every(([, o]) => !!o.responses?.["402"]), "missing 402 response");
 check("every paid op has input (body or params)", paidOps.every(([, o]) => !!o.requestBody || (o.parameters || []).length > 0),
   paidOps.filter(([, o]) => !o.requestBody && !(o.parameters || []).length).map(([k]) => k).join(" "));
+// Their other probe failure mode is a validation reject on the probe body; an example gives the scanner
+// input that would actually pass, so every paid op must carry one.
+const noExample = paidOps.filter(([, o]) => !(o.requestBody?.content?.["application/json"]?.example)
+  && !(o.parameters || []).some((p) => p.example !== undefined)).map(([k]) => k);
+check("every paid op carries a usable probe example", noExample.length === 0, noExample.join(" "));
 const freeOps = Object.entries(oa.paths || {}).flatMap(([p, item]) =>
   Object.entries(item).filter(([, op]) => Array.isArray(op?.security) && op.security.length === 0).map(([m]) => `${m.toUpperCase()} ${p}`));
 check("free endpoints are declared security:[] (scanner skips them)", freeOps.length >= 9, `${freeOps.length}: ${freeOps.join(" ")}`);
