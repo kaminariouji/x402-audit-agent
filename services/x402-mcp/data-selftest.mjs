@@ -171,6 +171,19 @@ check("every tool annotated readOnly + non-destructive", tools.length === 9 && t
 check("no tool description contradicts the live price", !tools.some((t) => /0\.05 USDC|\(0\.01 USDC via x402\)/.test(t.description || "")), JSON.stringify(tools.filter((t) => /0\.05|0\.01 USDC via/.test(t.description || "")).map((t) => t.name)));
 check("every tool carries a human title", tools.every((t) => typeof t.title === "string" && t.title.length > 4), JSON.stringify(tools.filter((t) => !t.title).map((t) => t.name)));
 
+// RFC 9727 catalog: the standards-based route a crawler uses to find /openapi.json unprompted.
+const cat = await fetch(base + "/.well-known/api-catalog");
+const catJson = await cat.json().catch(() => ({}));
+const catLinks = (catJson.linkset || []).flatMap((l) => [...(l.links || []), ...(l["service-desc"] || []).map((x) => ({ rel: "service-desc", ...x }))]);
+check("GET /.well-known/api-catalog -> 200 linkset+json", cat.status === 200 && cat.headers.get("content-type")?.includes("application/linkset+json"),
+  `${cat.status}/${cat.headers.get("content-type")}`);
+check("catalog linkset is non-empty with anchors", (catJson.linkset || []).length >= 2 && catJson.linkset.every((l) => /^https:\/\//.test(String(l.anchor))), JSON.stringify((catJson.linkset || []).map((l) => l.anchor)));
+check("catalog points at openapi.json + health + llms.txt", ["openapi.json", "health", "llms.txt"].every((k) => catLinks.some((l) => String(l.href).includes(k))), JSON.stringify(catLinks.map((l) => l.href)));
+check("catalog hrefs are all absolute https on our origin", catLinks.every((l) => String(l.href).startsWith("https://")), JSON.stringify(catLinks.map((l) => l.href).slice(0, 3)));
+check("every response advertises Link: rel=api-catalog", /rel="api-catalog"/.test(cat.headers.get("link") || ""), String(cat.headers.get("link")));
+const gateLink = (await fetch(base + "/gas")).headers.get("link") || "";
+check("the 402 challenge itself carries the catalog Link header", /rel="api-catalog"/.test(gateLink), gateLink);
+
 if (fails.length) {
   console.log(`\nSELFTEST FAIL (${fails.length}): ${fails.join(", ")}`);
   process.exit(1);
