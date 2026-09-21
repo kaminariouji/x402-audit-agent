@@ -36,18 +36,21 @@ const PUBLIC_URL = (process.env.X402_PUBLIC_URL || "https://labored-safari-islam
 const SOLANA_NETWORK = process.env.X402_SOLANA_NETWORK || "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 const PAY_TO_SOLANA = process.env.X402_PAY_TO_SOLANA || "5NWSPyJChL2NJf3oEr6Mh4vLvG5S3qQmf5S4v7v8wEV4";
 // Order is a money-path decision, not cosmetic: x402HTTPClient's default selector takes accepts[0],
-// so whichever entry is first is where an unconfigured buyer's payment attempt goes. Measured with
-// a zero-balance key against the production facilitator (see solana-pay.mjs / domain-hunt.mjs):
-//   Solana  -> the transaction is parsed, the payer recovered, and it fails only at on-chain
-//              simulation because our probe account is empty. The wire works; only funds are missing.
-//   Base    -> every EIP-3009 signature is refused with invalid_exact_evm_signature, including one
-//              that provably recovers to the payer over the token's real DOMAIN_SEPARATOR
-//              (separator-check.mjs), for every name/version pair we can present.
-// So Solana leads. Base stays published for spec parity and for buyers on a facilitator that does
-// verify EVM correctly (e.g. CDP), which is why it is second rather than removed.
+// so whichever entry is first is where an unconfigured buyer's payment attempt goes.
+//   Base   -> payai refuses every EIP-3009 signature (invalid_exact_evm_signature), including a
+//             provably-valid one; 8/8 stranger services on payai's own index get the identical
+//             refusal (stranger-verify.mjs), so this is OUR facilitator choice, not the buyer's and
+//             not our challenge. Verification is the seller's facilitator call, so one env flip to
+//             CDP makes this rail settle. An EVM address needs no account setup to receive.
+//   Solana -> payai parses and recovers the payer, but the transfer cannot settle AT ALL for us:
+//             the client derives destinationATA = findAssociatedTokenPda(payTo) and never creates it
+//             (@x402/svm/dist/esm/chunk-FKOM6YTW.mjs:74-90), and our payTo has no USDC token account
+//             and 0 lamports (sol-receive-probe.mjs). Only ~0.00203928 SOL of one-time rent fixes it.
+// So Base leads: it is one free API key from working, while Solana is one capital payment from
+// working. Solana stays published second for clients that pick a network explicitly.
 const acceptsFor = (price) => ([
-  { scheme: "exact", price, network: SOLANA_NETWORK, payTo: PAY_TO_SOLANA },
   { scheme: "exact", price, network: NETWORK, payTo: PAY_TO },
+  { scheme: "exact", price, network: SOLANA_NETWORK, payTo: PAY_TO_SOLANA },
 ]);
 // Bazaar catalog search only reads what the 402 challenge carries: serviceName (<=32 chars),
 // the FIRST 5 tags, description and iconUrl (see @x402/extensions sanitize* rules). Facilitators
@@ -57,10 +60,10 @@ const ICON_URL = process.env.X402_ICON_URL || "https://github.com/kaminariouji.p
 // Shared pricing block for every human/crawler-facing discovery route.
 const PAYMENT_INFO = {
   protocol: "x402 (HTTP 402)", currency: "USDC",
-  // Mirrors acceptsFor: Solana first, because that is the network a default client should try.
+  // Mirrors acceptsFor: Base first, because that is the network a default client should try.
   networks: [
-    { network: SOLANA_NETWORK, label: "Solana mainnet", asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", payTo: PAY_TO_SOLANA, prices: { audit: PRICE, data: PRICE_DATA }, note: "facilitator is feePayer; receiving costs the seller $0" },
     { network: NETWORK, label: "Base mainnet", asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", payTo: PAY_TO, prices: { audit: PRICE, data: PRICE_DATA } },
+    { network: SOLANA_NETWORK, label: "Solana mainnet", asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", payTo: PAY_TO_SOLANA, prices: { audit: PRICE, data: PRICE_DATA }, note: "facilitator is feePayer; receiving costs the seller $0, but this payTo has no USDC token account yet, so payments here fail until its 0.00203928 SOL ATA rent is funded" },
   ],
 };
 
@@ -777,18 +780,18 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "- `GET /`, `/health`, `/.well-known/x402-info`, `/discovery/resources`, `/robots.txt` (free metadata)", "",
   "## Buyer quickstart (no signup, no API key — you keep your own funded wallet)",
   "Send the request unpaid first. We answer HTTP 402 with base64 JSON terms on the `payment-required` response header. Build a payment for ONE of the two `accepts[]` entries, then resend with it in the `PAYMENT-SIGNATURE` request header.", "",
-  "**Pay on Solana (`" + SOLANA_NETWORK + "`, USDC mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v).** It is `accepts[0]` on purpose: with the keyless facilitator we run on, a Solana payment is parsed, the payer recovered and the transaction simulated on-chain, so a funded buyer settles. The Base (`" + NETWORK + "`) entry is published second for spec parity, but that facilitator currently refuses every EIP-3009 signature handed to it there — including one that provably recovers to the payer over USDC's own on-chain `DOMAIN_SEPARATOR` — so a Base attempt 402s however valid the payment. If you must settle on Base, use a facilitator that verifies EVM (e.g. CDP); our challenge is unchanged and accepts it.", "",
+  "**Pay on Base (`" + NETWORK + "`, USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913).** It is `accepts[0]` on purpose: an EVM address needs no account setup to receive, and the payment is a standard EIP-712 `TransferWithAuthorization`. One honest caveat, and it is ours to fix: the keyless facilitator we currently run (`facilitator.payai.network`) refuses every EIP-3009 signature handed to it on Base — measured against our own provably-valid signature and against 8 stranger services on that same facilitator, all refused identically — so a default client may 402 you on a correct payment. A refused payment never transfers, so a failed attempt costs you nothing but a signature. If you hit it, point your client at a facilitator that verifies EVM (e.g. CDP).", "",
+  "**Solana (`" + SOLANA_NETWORK + "`, mint `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) is `accepts[1]`.** That facilitator does parse and verify Solana payments correctly. The blocker there is ours and is stated so you do not waste a signature: `ExactSvmScheme` transfers straight into the ATA it derives for our `payTo`, and that account has not had its one-time 0.00203928 SOL rent paid, so the transfer fails on-chain simulation until it exists. `/.well-known/x402-info` is updated the moment it is funded.", "",
   "Do NOT use the legacy `x402-fetch` / `X-PAYMENT` v1 convention against this origin: v2 is what we verify, and a v1 payload is missing the `accepted` field the matcher requires, so it 402s forever.", "",
   "```js",
-  "// npm i @x402/core@2 @x402/svm@2 @solana/signers   (this is the path our own probe exercises)",
+  "// npm i @x402/core@2 @x402/evm@2 viem   (Base USDC is accepts[0]; the path that can settle)",
   "import { x402Client, x402HTTPClient } from \"@x402/core/client\";",
-  "import { ExactSvmScheme } from \"@x402/svm/exact/client\";",
-  "import { generateKeyPairSigner } from \"@solana/signers\";   // createKeyPairSignerFromBytes for your own key",
+  "import { ExactEvmScheme } from \"@x402/evm/exact/client\";",
+  "import { privateKeyToAccount } from \"viem/accounts\";   // any Base account holding USDC",
   "",
   "let accepts = [];",
-  "const client = new x402Client(() =>",
-  "  accepts.find((a) => a.network.startsWith(\"solana:\")) ?? accepts[0]);",
-  "client.register(\"" + SOLANA_NETWORK + "\", new ExactSvmScheme(await generateKeyPairSigner()));",
+  "const client = new x402Client(() => accepts[0]);   // accepts[0] = eip155:8453, accepts[1] = solana",
+  "client.register(\"" + NETWORK + "\", new ExactEvmScheme(privateKeyToAccount(process.env.BUYER_PRIVATE_KEY)));",
   "const http = new x402HTTPClient(client);",
   "",
   "const url = \"" + PUBLIC_URL + "/audit\";",
@@ -798,14 +801,13 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "const unpaid = await fetch(url, init);                                  // -> 402",
   "const terms = JSON.parse(Buffer.from(unpaid.headers.get(\"payment-required\"), \"base64\").toString());",
   "accepts = terms.accepts;",
-  "const payload = await http.createPaymentPayload(terms);                 // builds + signs the USDC transfer tx",
+  "const payload = await http.createPaymentPayload(terms);                 // builds the EIP-712 transfer authorization",
   "const res = await fetch(url, { ...init, headers: { ...init.headers,      // -> 200, only after settlement",
   "  ...http.encodePaymentSignatureHeader(payload) } });",
   "const { signalCount, findings } = await res.json();",
   "```",
-  "Settlement costs the seller nothing: on Solana the facilitator is the feePayer, so USDC lands in our wallet and you pay only your own transaction's fee. Docs: https://docs.x402.org/getting-started/quickstart-for-buyers", "",
-  "Solana specifics: the acceptance is `accepts[0]` (mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v, network " + SOLANA_NETWORK + "). `ExactSvmScheme` builds a versioned transfer transaction from your USDC token account to " + PAY_TO_SOLANA + "; you sign it locally and send it as `PAYMENT-SIGNATURE`. A buyer with no USDC token account fails at simulation, not at our gate.", "",
-  "EVM buyers: the same three steps work with `ExactEvmScheme` from `@x402/evm/exact/client` registered on `" + NETWORK + "`, subject to the facilitator caveat above — the payment it must accept is a standard EIP-712 `TransferWithAuthorization` over `{name: \"USD Coin\", version: \"2\", chainId: 8453, verifyingContract: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913}`, which is what our challenge declares.", "",
+  "Receiving costs the seller nothing on either rail: on Solana the facilitator is the feePayer, and on Base the buyer submits the EIP-3009 authorization, so USDC lands in our wallet and you pay only your own rail's fee. Docs: https://docs.x402.org/getting-started/quickstart-for-buyers", "",
+  "The exact payload we must accept on Base is an EIP-712 `TransferWithAuthorization` over `{name: \"USD Coin\", version: \"2\", chainId: 8453, verifyingContract: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913}` — that struct hash matches USDC's live on-chain `DOMAIN_SEPARATOR`, which is how we proved our own signature was correct before the facilitator refused it.", "",
   "MCP: point any MCP client at " + PUBLIC_URL + "/mcp (Streamable HTTP, POST only). initialize, tools/list and demo_audit are free; paid tools are audit_bot_code, get_token_price, search_tokens, top_markets, chain_tvl, stablecoin_supply, trending_tokens, gas_prices.", "",
   "Source: https://github.com/kaminariouji/x402-audit-agent",
 ].join("\n")));
