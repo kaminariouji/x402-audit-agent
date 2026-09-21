@@ -73,6 +73,13 @@ check("audit 402 offers Base", aNets.includes("eip155:8453"), aNets.join(","));
 check("audit 402 offers Solana mainnet", aNets.some((n) => n.startsWith("solana:5eykt")), aNets.join(","));
 check("audit payTo distinct per network", new Set(aPays).size === 2, aPays.join(","));
 check("audit payTo is one EVM + one base58", aPays.some((p) => /^0x[a-fA-F0-9]{40}$/.test(p)) && aPays.some((p) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(p)), aPays.join(","));
+// Ordering is a money-path decision, not cosmetics: x402HTTPClient's DEFAULT selector takes
+// accepts[0], so entry zero is where an unconfigured buyer's payment lands. Measured against the
+// production facilitator with a zero-balance key: Solana reaches on-chain simulation (wire good,
+// funds missing) while Base refuses every EIP-3009 signature it is handed. Solana must stay first.
+check("Solana leads accepts (default buyer route)", aNets[0].startsWith("solana:5eykt"), aNets.join(","));
+const dAccepts0 = (await challengeOf("/markets")).body.accepts || [];
+check("data accepts lead with Solana too", dAccepts0[0]?.network?.startsWith("solana:5eykt"), dAccepts0.map((a) => a.network).join(","));
 check("audit priced 0.01 USDC on both", (audit.body.accepts || []).every((a) => a.amount === "10000"), JSON.stringify(audit.body.accepts?.map((a) => a.amount)));
 const data = await challengeOf("/markets");
 const dNets = (data.body.accepts || []).map((a) => a.network);
@@ -113,6 +120,16 @@ for (const [path, method] of [["/price", "GET"], ["/markets", "GET"], ["/audit",
 }
 const mm = await (await fetch(base + "/price", { method: "PUT" })).json();
 check("405 body names working method + price", mm.paid_endpoint === "GET /price" && mm.paywall?.price === "$0.001", JSON.stringify(mm).slice(0, 160));
+
+// The /mcp gate keys off the PATH, not the JSON-RPC body, so one challenge prices every tool. It used
+// to read "run audit_bot_code on one source file" — wrong for 8 of the 9 paid tools, and it billed a
+// get_token_price buyer $0.01 for something GET /price sells at $0.001. The challenge must state the
+// real rule instead of advertising the audit case only.
+const mcpChallenge = await fetch(base + "/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+const mcpTerms = JSON.parse(Buffer.from(mcpChallenge.headers.get("payment-required") || "", "base64").toString());
+const mcpDesc = String(mcpTerms?.resource?.description ?? mcpTerms?.accepts?.[0]?.description ?? "");
+check("POST /mcp challenge describes every tool, not just audit", /tools\/call/.test(mcpDesc) && /market-data/.test(mcpDesc), mcpDesc.slice(0, 180));
+check("POST /mcp challenge quotes the cheaper HTTP data price", mcpDesc.includes("$0.001"), mcpDesc.slice(0, 180));
 
 // The SDK reads ONLY PAYMENT-SIGNATURE (chunk-UF6R7D6H extractPayment); our own openapi once told
 // buyers to send the retired v1 X-PAYMENT header, which would 402 them forever. Never regress.
@@ -202,6 +219,8 @@ check("llms.txt warns off the v1 x402-fetch/X-PAYMENT path", /x402-fetch/.test(l
 check("llms.txt does not present x402Fetch as the happy path", !/await x402Fetch\(/.test(llms), "still shows x402Fetch usage");
 const snippet = (llms.match(/```js\n([\s\S]*?)```/) || [, ""])[1];
 check("llms.txt ships a javascript recipe", snippet.includes("createPaymentPayload") && snippet.includes("encodePaymentSignatureHeader"), snippet.slice(0, 60));
+// The recipe must point at the network that can actually settle (see the accepts-order check above).
+check("llms.txt recipe defaults to the Solana acceptance", /solana:/.test(snippet) && !/startsWith\("eip155:"\)/.test(snippet), snippet.slice(0, 80));
 const snippetFile = join(tmpdir(), `published-buyer-snippet-${process.pid}.mjs`);
 writeFileSync(snippetFile, snippet.replace("process.env.BUYER_PRIVATE_KEY", '"0x" + "1".repeat(64)'));
 const checked = spawnSync(process.execPath, ["--check", snippetFile], { encoding: "utf8" });
