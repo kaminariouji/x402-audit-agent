@@ -595,11 +595,20 @@ const OFFERED_NETS = [
   { network: SOLANA_NETWORK, asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", payTo: PAY_TO_SOLANA, decimals: 6 },
 ];
 const atomicOf = (usd) => String(Math.round(parseFloat(String(usd).replace(/[^0-9.]/g, "")) * 1e6));
+// Glimind's own contract for a buyer is "payment.x402Details has the exact amount, asset, network and
+// pay-to address" — four flat fields, not a list to choose from. `accepts[]` is the correct x402 shape
+// for a paying client but reads as no price to a crawler that wants one answer, so each entry also
+// states the flat form, pinned to the rail that can actually settle (Base; see acceptsFor above).
+const PRIMARY_NET = OFFERED_NETS[0];
 function termsFor(route) {
   const amount = atomicOf(route.price);
+  const detail = { scheme: "exact", amount, currency: "USDC", decimals: PRIMARY_NET.decimals,
+    network: PRIMARY_NET.network, asset: PRIMARY_NET.asset, payTo: PRIMARY_NET.payTo, maxTimeoutSeconds: 300 };
   return {
     url: PUBLIC_URL + route.path, method: route.method, scheme: "exact", currency: "USDC",
     priceUsd: route.price, priceAtomic: amount,
+    ...detail,
+    x402Details: detail,
     paymentHeaders: { preferred: "PAYMENT-SIGNATURE", legacy: "X-PAYMENT" },
     accepts: OFFERED_NETS.map((n) => ({ ...n, amount, maxTimeoutSeconds: 300 })),
   };
@@ -610,6 +619,9 @@ app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
     resources: [`${PUBLIC_URL}/audit`, ...[...PAID_DATA_PATHS].map((p) => PUBLIC_URL + p)],
     ownershipProofs: [PAY_TO],
     payments: PAYABLE_ROUTES.map(termsFor),
+    x402Details: { ...termsFor({ path: "/audit", method: "POST", price: PRICE }).x402Details,
+      resourceIndex: `${PUBLIC_URL}/.well-known/x402`, perCall: true },
+    networks: OFFERED_NETS,
     pricing: { model: "per_call", currency: "USDC", minUsd: PRICE_DATA.replace("$", ""), maxUsd: PRICE.replace("$", "") },
     instructions: `Pay-per-call x402 USDC on Base or Solana, no account and no API key. POST /audit for a crypto-bot honesty scan; GET /price?address=0x.., /search_tokens?q=.., /markets, /tvl, /stablecoins, /trending, /gas for market data at ${PRICE_DATA}; MCP tool audit_bot_code on POST /mcp.`,
   });

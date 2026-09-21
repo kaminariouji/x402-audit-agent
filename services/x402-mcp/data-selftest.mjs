@@ -248,6 +248,14 @@ check("x402 fan-out prices every payable route in atomic units", Array.isArray(w
   JSON.stringify((wk.payments || []).map((p) => `${p.method} ${p.url?.split("/").pop()}=${p.priceAtomic}`)));
 check("x402 fan-out names asset + payTo + network per offer", wk.payments?.every((p) => p.accepts?.every((a) =>
   a.network && a.asset && a.payTo && a.decimals === 6)), JSON.stringify(wk.payments?.[0]?.accepts));
+// Glimind fills its buyer record from FOUR FLAT fields (amount/asset/network/payTo), not from a choice
+// list — with only accepts[] it published price:null for every x402 tool in its index.
+check("x402 fan-out states the flat x402Details a router reads", wk.payments?.every((p) =>
+  /^\d+$/.test(String(p.x402Details?.amount)) && p.x402Details?.network === "eip155:8453"
+    && p.x402Details?.asset === "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    && p.x402Details?.payTo === "0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b"), JSON.stringify(wk.payments?.[0]?.x402Details));
+check("x402 fan-out root also carries x402Details + network list",
+  !!wk.x402Details?.amount && Array.isArray(wk.networks) && wk.networks.length === 2, JSON.stringify(wk.x402Details));
 check("x402 fan-out agrees with the live 402 challenge on /price",
   wk.payments?.find((p) => p.url.endsWith("/price"))?.accepts?.[0]?.amount
     === (await challengeOf("/price")).body?.accepts?.[0]?.amount,
