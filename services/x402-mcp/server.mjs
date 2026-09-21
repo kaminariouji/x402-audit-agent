@@ -583,6 +583,22 @@ app.get("/discovery/resources", (_req, res) => res.json({
     description: r.description, tags: r.tags ?? ["crypto", "audit", "market-data", "agents", "api"],
   })),
 }));
+// Catalogers probe the whole verb matrix (PATCH/PUT/DELETE/HEAD) against a payable path before
+// trusting it; a 404 reads as "route is dead" and the service gets skipped, so answer with the
+// method that works plus the price. OPTIONS stays free for CORS preflight.
+const PAYABLE_BY_PATH = new Map(PAYABLE_ROUTES.map((r) => [r.path, r]));
+app.use((req, res, next) => {
+  const route = PAYABLE_BY_PATH.get(req.path);
+  const method = req.method.toUpperCase();
+  if (!route || method === route.method || method === "OPTIONS") return next();
+  return res.status(405).set("Allow", `${route.method}, OPTIONS`).json({
+    error: "method_not_allowed",
+    paid_endpoint: `${route.method} ${route.path}`,
+    endpoint: PUBLIC_URL + route.path,
+    paywall: { ...PAYMENT_INFO, price: route.price },
+    probe: `this service is LIVE; send ${route.method} with an x402 payment (${route.price} USDC) to use it`,
+  });
+});
 // Deliberately permissive: every route is public (payment is enforced per-request, not by
 // crawling policy), and the LLMs field points agents at the machine-readable service terms.
 app.get("/robots.txt", (_req, res) => res.type("text/plain").send([
