@@ -720,11 +720,11 @@ app.get("/openapi.json", (_req, res) => res.json({
     title: "crypto-bot-honesty-audit", version: "1.1.0",
     description: "Pay-per-call x402 agent: crypto-bot honesty scan plus keyless per-call crypto market data (price, search, market cap, TVL, stablecoins, trending, gas).",
     contact: { url: "https://github.com/kaminariouji/x402-audit-agent" },
-    "x-guidance": `Paid routes, no signup and no API key. (1) POST /audit body { code, filename } -> ${PRICE} USDC. (2) GET /price?address=0x.. -> ${PRICE_DATA} USDC. (3) GET /search_tokens?q=name -> ${PRICE_DATA} USDC. (4) GET /markets?vs=usd&limit=25, /tvl?limit=25, /stablecoins?limit=20, /trending?limit=10&chain=base, /gas?chains=base,arbitrum -> ${PRICE_DATA} USDC each. Unpaid -> HTTP 402 with x402 terms on the PAYMENT-REQUIRED header; pay USDC on Base (${NETWORK}) or Solana (${SOLANA_NETWORK}) via an x402 client and resend with the payment in the PAYMENT-SIGNATURE header (v2 wire format — X-PAYMENT is the retired v1 name). MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.`,
+    "x-guidance": `Paid routes, no signup and no API key. (1) POST /audit body { code, filename } -> ${PRICE} USDC. (2) GET /price?address=0x.. -> ${PRICE_DATA} USDC. (3) GET /search_tokens?q=name -> ${PRICE_DATA} USDC. (4) GET /markets?vs=usd&limit=25, /tvl?limit=25, /stablecoins?limit=20, /trending?limit=10&chain=base, /gas?chains=base,arbitrum -> ${PRICE_DATA} USDC each. Unpaid -> HTTP 402 with x402 terms on the PAYMENT-REQUIRED header; pay USDC on Base (${NETWORK}) or Solana (${SOLANA_NETWORK}) via an x402 client and resend with the payment in the PAYMENT-SIGNATURE header (v2 wire). A legacy v1 X-PAYMENT envelope on Base is also accepted on the EVM rail. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.`,
   },
   servers: [{ url: PUBLIC_URL }],
   security: [{ x402: [] }],
-  components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "PAYMENT-SIGNATURE", description: `x402 v2 USDC payment on ${NETWORK} or ${SOLANA_NETWORK}; the 402 challenge on the PAYMENT-REQUIRED header lists both accepts. Settle one, then resend with the payment in PAYMENT-SIGNATURE. (X-PAYMENT is the retired v1 header name and is NOT read here.)` } } },
+  components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "PAYMENT-SIGNATURE", description: `x402 USDC payment on ${NETWORK} or ${SOLANA_NETWORK}; the 402 challenge on the PAYMENT-REQUIRED header lists both accepts. Settle one, then resend with the payment in PAYMENT-SIGNATURE (v2 wire). On the Base rail a legacy v1 envelope in the X-PAYMENT header is also verified and settled — this origin supplies the accepted terms itself, so a client cannot negotiate them.` } } },
   paths: { "/audit": paidOp("post", "Audit a crypto-bot source file for fake-earnings bug patterns (paid via x402)", PRICE, {
     body: OBJ("One source file to scan", { code: { type: "string", description: "one JS/TS file, UTF-8" }, filename: { type: "string", description: "optional display name" } }, ["code"]),
     example: { code: 'const provider = new ethers.JsonRpcProvider("https://eth-sepolia.g.alchemy.com/v2/KEY");\nstate.earnings.total_usd += amount;', filename: "bot.js" },
@@ -781,7 +781,7 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "Send the request unpaid first. We answer HTTP 402 with base64 JSON terms on the `payment-required` response header. Build a payment for ONE of the two `accepts[]` entries, then resend with it in the `PAYMENT-SIGNATURE` request header.", "",
   "**Pay on Base (`" + NETWORK + "`, USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913).** It is `accepts[0]` because it is the rail that works: measured against our own published acceptance, the facilitator we run (`facilitator.payai.network`) verifies a correctly-signed EIP-712 `TransferWithAuthorization` and only then reports the signer's balance — 3/3 fresh zero-balance keys reached `invalid_exact_evm_insufficient_balance`, which means the payment itself was accepted. No signup, no API key, receiving costs the seller nothing, and your funds only move on a successful settle.", "",
   "**Solana (`" + SOLANA_NETWORK + "`, mint `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) is `accepts[1]`, and it is currently unusable on OUR side — please do not spend a signature on it.** `ExactSvmScheme` transfers straight into the ATA it derives for our `payTo`, and that account has never had its one-time 0.00203928 SOL rent paid (our `payTo` holds 0 lamports and 0 token accounts), so the transfer fails in on-chain simulation for every buyer. This file and `/.well-known/x402-info` are updated the moment it is funded.", "",
-  "Do NOT use the legacy `x402-fetch` / `X-PAYMENT` v1 convention against this origin: v2 is what we verify, and a v1 payload is missing the `accepted` field the matcher requires, so it 402s forever.", "",
+  "**Both wire versions are accepted, on Base.** Preferred is v2: put the payment in the `PAYMENT-SIGNATURE` header. Legacy v1 (`x402-fetch`, and what the Glimind router tells agents to do) also works: send the base64 v1 envelope in `X-PAYMENT` and this origin maps it onto the acceptance WE publish for the route being called, then runs the identical SDK verification and settlement — the EIP-712 `TransferWithAuthorization` a v1 client signs is byte-for-byte the one a v2 client signs, so nothing is trusted from the caller. A v1 payment for another wallet, another amount or another route is left alone and gets the normal 402.", "",
   "```js",
   "// npm i @x402/core@2 @x402/evm@2 viem   (Base USDC is accepts[0]; the path that can settle)",
   "import { x402Client, x402HTTPClient } from \"@x402/core/client\";",
@@ -811,6 +811,63 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "Source: https://github.com/kaminariouji/x402-audit-agent",
 ].join("\n")));
 
+// ---- legacy x402 v1 wire bridge ----
+// Glimind is the router buyer agents consult BEFORE calling an external tool, and we are listed there
+// live and marked x402/automatable (toolId mcp-registry/io.github.kaminariouji/x402-audit-agent/*) — but
+// the howToPay it hands those agents says "resend the call with an X-PAYMENT header", i.e. the retired
+// v1 wire name. The installed SDK's extractor reads only PAYMENT-SIGNATURE, so every buyer that followed
+// Glimind's own instructions took a 402 and gave up (measured, task #28).
+// The EIP-712 TransferWithAuthorization a v1 client signs is byte-identical to the one a v2 client
+// signs, so this is a shape mapping, not a second payment system: requirement matching, signature
+// verification and settlement all still run through the SDK and the facilitator below. Nothing about
+// the payment is trusted from the client — the `accepted` object is OUR OWN published acceptance, and
+// translation happens only when network, payTo and amount match it exactly; anything else falls
+// through untouched so the normal 402 challenge answers as it always has.
+// The matcher (@x402/core paymentRequirementsMatchAccepted) deep-equals the whole requirement, so
+// `accepted` must be the enriched acceptance the gate actually publishes (amount/asset/
+// maxTimeoutSeconds), not the {scheme, price, network, payTo} we hand acceptsFor. Our own 402 challenge
+// is the authoritative source, so each payable route resolves it once from the loopback listener and
+// caches it; that probe carries no payment header, so it can never re-enter this bridge.
+const v1AcceptedCache = new Map();
+async function publishedBaseAcceptance(route) {
+  const key = `${route.method} ${route.path}`;
+  const cached = v1AcceptedCache.get(key);
+  if (cached) return cached;
+  // Probe the route the way it is actually served: a GET on a POST-only path answers 405 with no
+  // PAYMENT-REQUIRED header, which would make the acceptance unresolvable for POST /audit and /mcp.
+  const self = await fetch(`http://127.0.0.1:${PORT}${route.path}`, { method: route.method }).catch(() => null);
+  const raw = self?.headers?.get("payment-required");
+  if (!raw) return null;
+  const terms = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+  const found = (terms.accepts ?? []).find((a) => a.network === NETWORK && a.scheme === "exact") ?? null;
+  if (found) v1AcceptedCache.set(key, found);
+  return found;
+}
+app.use((req, _res, next) => {
+  void (async () => {
+    try {
+      if (req.headers["payment-signature"] || !req.headers["x-payment"]) return next();
+      const v1 = JSON.parse(Buffer.from(String(req.headers["x-payment"]), "base64").toString("utf8"));
+      if (v1?.x402Version !== 1 || v1?.scheme !== "exact") return next();
+      if (v1.network !== "base" && v1.network !== NETWORK) return next();
+      const route = PAYABLE_BY_PATH.get(req.path);
+      if (!route || req.method.toUpperCase() !== route.method) return next();
+      const terms = await publishedBaseAcceptance(route);
+      const { authorization, signature } = v1.payload ?? {};
+      if (!terms || !authorization || !signature) return next();
+      if (String(authorization.to).toLowerCase() !== String(terms.payTo).toLowerCase()) return next();
+      if (BigInt(String(authorization.value)) !== BigInt(String(terms.amount))) return next();
+      req.headers["payment-signature"] = Buffer.from(JSON.stringify({
+        x402Version: 2, payload: { authorization, signature }, accepted: terms,
+      })).toString("base64");
+      delete req.headers["x-payment"];
+      console.log(`[x402-v1-bridge] translated ${req.method} ${req.path} v1 payment (${terms.amount} atomic; verified downstream)`);
+    } catch {
+      // A malformed X-PAYMENT header is not our problem: fall through and let the gate re-challenge.
+    }
+    next();
+  })();
+});
 // ---- payment gate ----
 app.use(paymentMiddlewareFromHTTPServer(httpServer, undefined, undefined, true));
 

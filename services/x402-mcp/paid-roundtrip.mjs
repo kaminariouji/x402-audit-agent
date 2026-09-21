@@ -234,6 +234,75 @@ console.log(`forged-signature GET /price -> ${badSigRes.status} error=${JSON.str
 check("forged signature -> 402", badSigRes.status === 402, String(badSigRes.status));
 check("forged signature fails signature recovery, not just terms", seen[seen.length - 1]?.invalidReason === "bad_signature", JSON.stringify(seen[seen.length - 1]?.invalidReason));
 
+console.log("\n== legacy v1 wire: the header the Glimind router tells buyers to send ==");
+// A v1 X-PAYMENT payload carries the SAME EIP-712 authorization + signature as v2; only the envelope
+// differs. This is what an X-PAYMENT-following buyer actually puts on the wire.
+const v1 = (p, over = {}) => Buffer.from(JSON.stringify({
+  x402Version: 1, scheme: "exact", network: "base",
+  payload: {
+    authorization: { ...p.payload.authorization, ...(over.authorization ?? {}) },
+    signature: p.payload.signature,
+  },
+  ...(over.top ?? {}),
+})).toString("base64");
+const seenBeforeV1 = seen.length;
+
+const v1Price = await fetch(priceUrl, { headers: { "x-payment": v1(payload) } });
+const v1PriceJson = await v1Price.json().catch(() => ({}));
+console.log(`v1 X-PAYMENT GET /price -> ${v1Price.status} ${JSON.stringify(v1PriceJson).slice(0, 120)}`);
+check("v1 payment on /price -> 200", v1Price.status === 200, String(v1Price.status));
+check("v1 payment gets live data, not an error", Number(v1PriceJson.priceUsd ?? 0) > 0, JSON.stringify(v1PriceJson).slice(0, 120));
+check("v1 payment settles (PAYMENT-RESPONSE echoed)", !!v1Price.headers.get("payment-response"), String(v1Price.headers.get("payment-response")));
+const v1Verify = seen.slice(seenBeforeV1).find((s) => s.path.endsWith("/verify"));
+check("v1 payment went through facilitator /verify (not a bypass)", !!v1Verify, JSON.stringify(seen.slice(-3).map((s) => s.path)));
+check("v1 /verify recovered the real buyer from the signature",
+  String(v1Verify?.recoveredPayer ?? "").toLowerCase() === account.address.toLowerCase(), String(v1Verify?.recoveredPayer));
+// The bridge must hand the facilitator the terms OUR server published, never terms the client claimed.
+const v1Req = v1Verify?.body?.paymentRequirements ?? {};
+check("v1 verify saw server-published terms (CAIP-2 network + data-tier amount + our payTo)",
+  v1Req.network === "eip155:8453"
+    && String(v1Req.amount) === String(payload.accepted.amount)
+    && String(v1Req.payTo).toLowerCase() === "0x7c8a3c26bd579c5176a29a5a8ae80536319fa94b",
+  JSON.stringify({ network: v1Req.network, amount: v1Req.amount, payTo: v1Req.payTo }));
+
+// Per-route terms: /audit costs PRICE and /price costs PRICE_DATA, so the acceptance the bridge injects
+// must belong to the route being called — otherwise a data-priced signature would buy an audit.
+const v1Audit = await fetch(base + "/audit", {
+  method: "POST", headers: { "content-type": "application/json", "x-payment": v1(audit.payload) }, body: auditBody,
+});
+const v1AuditJson = await v1Audit.json().catch(() => ({}));
+console.log(`v1 X-PAYMENT POST /audit -> ${v1Audit.status} findings=${v1AuditJson.findings?.length}`);
+check("v1 payment on /audit -> 200 with findings", v1Audit.status === 200 && Array.isArray(v1AuditJson.findings), String(v1Audit.status));
+check("the two tiers really differ (audit != data price)",
+  String(audit.payload.accepted.amount) !== String(payload.accepted.amount),
+  `${audit.payload.accepted.amount} vs ${payload.accepted.amount}`);
+const eip = await fetch(priceUrl, { headers: { "x-payment": v1(payload, { top: { network: "eip155:8453" } }) } });
+check("v1 with the CAIP-2 network name also works", eip.status === 200, String(eip.status));
+
+// The bridge is a shape mapper, not a trust grant: anything that does not match OUR published terms for
+// that exact route keeps failing, and no client-supplied requirement is ever believed.
+const wrongPayee = await fetch(priceUrl, {
+  headers: { "x-payment": v1(payload, { authorization: { to: "0x1111111111111111111111111111111111111111" } }) },
+});
+check("v1 paying a DIFFERENT wallet -> 402", wrongPayee.status === 402, String(wrongPayee.status));
+check("v1 paying a different wallet never settles", !wrongPayee.headers.get("payment-response"), String(wrongPayee.headers.get("payment-response")));
+const underPay = await fetch(priceUrl, {
+  headers: { "x-payment": v1(payload, { authorization: { value: String(BigInt(payload.accepted.amount) - 1n) } }) },
+});
+check("v1 under-paying -> 402", underPay.status === 402, String(underPay.status));
+const crossRoute = await fetch(base + "/audit", {
+  method: "POST", headers: { "content-type": "application/json", "x-payment": v1(payload) }, body: auditBody,
+});
+check("v1 /price signature on /audit -> 402 (no cross-route downgrade)", crossRoute.status === 402, String(crossRoute.status));
+const badScheme = await fetch(priceUrl, {
+  headers: { "x-payment": Buffer.from(JSON.stringify({ x402Version: 1, scheme: "upto", network: "base", payload: payload.payload })).toString("base64") },
+});
+check("v1 with an unsupported scheme -> 402", badScheme.status === 402, String(badScheme.status));
+const garbage = await fetch(priceUrl, { headers: { "x-payment": "not-even-base64{{{" } });
+check("garbage X-PAYMENT -> 402, never 500", garbage.status === 402, String(garbage.status));
+const bothHeaders = await fetch(priceUrl, { headers: { ...http.encodePaymentSignatureHeader(payload), "x-payment": v1(payload, { authorization: { to: "0x1111111111111111111111111111111111111111" } }) } });
+check("a real v2 header wins: a hostile X-PAYMENT cannot shadow it", bothHeaders.status === 200, String(bothHeaders.status));
+
 child.kill();
 mock.close();
 if (fails.length) { console.log(`\nROUNDTRIP FAIL (${fails.length}): ${fails.join(", ")}`); process.exit(1); }

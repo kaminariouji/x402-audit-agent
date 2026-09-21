@@ -131,14 +131,39 @@ const mcpDesc = String(mcpTerms?.resource?.description ?? mcpTerms?.accepts?.[0]
 check("POST /mcp challenge describes every tool, not just audit", /tools\/call/.test(mcpDesc) && /market-data/.test(mcpDesc), mcpDesc.slice(0, 180));
 check("POST /mcp challenge quotes the cheaper HTTP data price", mcpDesc.includes("$0.001"), mcpDesc.slice(0, 180));
 
-// The SDK reads ONLY PAYMENT-SIGNATURE (chunk-UF6R7D6H extractPayment); our own openapi once told
-// buyers to send the retired v1 X-PAYMENT header, which would 402 them forever. Never regress.
+// The SDK's own extractor reads ONLY PAYMENT-SIGNATURE (chunk-UF6R7D6H extractPayment). We add a
+// deliberate, server-owned bridge for the legacy v1 X-PAYMENT envelope, because that is the header the
+// Glimind router hands to buyer agents. Two invariants must never regress: v2 stays the declared
+// preferred wire in every document, and v1 is only ever mapped onto OUR published terms.
 const oa = await (await fetch(base + "/openapi.json")).json();
 const scheme = oa.components?.securitySchemes?.x402?.name;
 check("openapi securityScheme is PAYMENT-SIGNATURE", scheme === "PAYMENT-SIGNATURE", String(scheme));
 const guidance = String(oa.info?.["x-guidance"] ?? "");
 check("openapi guidance has no stale X-PAYMENT advice", !/resend with the X-PAYMENT header/.test(guidance), "still tells buyers to use X-PAYMENT");
 check("openapi guidance quotes the live prices", guidance.includes("$0.01") && guidance.includes("$0.001"), guidance.slice(0, 200));
+check("openapi discloses the accepted v1 envelope", /X-PAYMENT/.test(String(oa.components?.securitySchemes?.x402?.description ?? "")),
+  "securityScheme silent on v1 while the server answers it");
+
+// Guards for the v1->v2 bridge itself. It must be additive: free routes and every mismatch have to
+// behave exactly as before, and a hostile envelope must never become a 500.
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64");
+const v1Like = (over = {}) => b64({ x402Version: 1, scheme: "exact", network: "base",
+  payload: { authorization: { from: "0x1111111111111111111111111111111111111111",
+    to: "0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b", value: "1000", validAfter: "0", validBefore: "9999999999", nonce: "0x0" },
+    signature: "0x" + "ab".repeat(65), ...(over.payload ?? {}) }, ...(over.top ?? {}) });
+const withV1 = async (path, opts = {}) => {
+  const r = await fetch(base + path, { ...opts, headers: { ...(opts.headers || {}), "x-payment": v1Like(opts.__v1) } });
+  return r.status;
+};
+check("a v1 envelope on a FREE route changes nothing (/health still 200)",
+  await withV1("/health") === 200, "bridge touched a free route");
+const junk = await fetch(base + "/gas", { headers: { "x-payment": "not-even-base64{{{" } });
+check("garbage X-PAYMENT on a paid route -> 402, never 500", junk.status === 402, String(junk.status));
+const wrongNet = await fetch(base + "/gas", { headers: { "x-payment": v1Like({ top: { network: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9hd" } }) } });
+check("a v1 envelope on an unsupported network -> 402 (no translation)", wrongNet.status === 402, String(wrongNet.status));
+const underpaid = await fetch(base + "/audit", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ code: "x", filename: "a.js" }), }).then(async (r) => r.status);
+check("unpaid POST /audit still 402 after the bridge shipped", underpaid === 402, String(underpaid));
 
 // x402scan's discovery contract (https://www.x402scan.com/discovery/spec.md) rejects an origin for
 // specific, silent reasons: protocols must be OBJECTS, a paid op with no response schema is "Input/Output
@@ -215,7 +240,7 @@ check("the 402 challenge itself carries the catalog Link header", /rel="api-cata
 // So: assert the header name is right AND that the published code actually parses.
 const llms = await (await fetch(base + "/llms.txt")).text();
 check("llms.txt names PAYMENT-SIGNATURE as the header to send", /PAYMENT-SIGNATURE/.test(llms), "missing");
-check("llms.txt warns off the v1 x402-fetch/X-PAYMENT path", /x402-fetch/.test(llms) && /X-PAYMENT/.test(llms) && /Do NOT use/.test(llms), "no warning");
+check("llms.txt documents that v1 X-PAYMENT now works on Base", /X-PAYMENT/.test(llms) && /Both wire versions are accepted/.test(llms), "v1 support undocumented");
 check("llms.txt does not present x402Fetch as the happy path", !/await x402Fetch\(/.test(llms), "still shows x402Fetch usage");
 const snippet = (llms.match(/```js\n([\s\S]*?)```/) || [, ""])[1];
 check("llms.txt ships a javascript recipe", snippet.includes("createPaymentPayload") && snippet.includes("encodePaymentSignatureHeader"), snippet.slice(0, 60));
