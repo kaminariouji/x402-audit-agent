@@ -813,6 +813,7 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "- `GET /`, `/health`, `/.well-known/x402-info`, `/discovery/resources`, `/robots.txt` (free metadata)", "",
   "## Buyer quickstart (no signup, no API key — you keep your own funded wallet)",
   "Send the request unpaid first. We answer HTTP 402 with base64 JSON terms on the `payment-required` response header. Build a payment for ONE of the two `accepts[]` entries, then resend with it in the `PAYMENT-SIGNATURE` request header.", "",
+  "Legacy v1 buyers are served too, with no extra work: the same 402 carries a v1-shaped JSON body (`x402Version:1`, short network name `base`, `maxAmountRequired`, `asset`, `resource`) that `x402-fetch` / `x402-axios` 1.x parse directly, you reply in `X-PAYMENT`, and the receipt comes back in `X-PAYMENT-RESPONSE`. Verified against the shipped Coinbase client, not just our own envelope.", "",
   "**Pay on Base (`" + NETWORK + "`, USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913).** It is `accepts[0]` because it is the rail that works: measured against our own published acceptance, the facilitator we run (`facilitator.payai.network`) verifies a correctly-signed EIP-712 `TransferWithAuthorization` and only then reports the signer's balance — 3/3 fresh zero-balance keys reached `invalid_exact_evm_insufficient_balance`, which means the payment itself was accepted. No signup, no API key, receiving costs the seller nothing, and your funds only move on a successful settle.", "",
   "**Solana (`" + SOLANA_NETWORK + "`, mint `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) is `accepts[1]`, and it is currently unusable on OUR side — please do not spend a signature on it.** `ExactSvmScheme` transfers straight into the ATA it derives for our `payTo`, and that account has never had its one-time 0.00203928 SOL rent paid (our `payTo` holds 0 lamports and 0 token accounts), so the transfer fails in on-chain simulation for every buyer. This file and `/.well-known/x402-info` are updated the moment it is funded.", "",
   "**Both wire versions are accepted, on Base.** Preferred is v2: put the payment in the `PAYMENT-SIGNATURE` header. Legacy v1 (`x402-fetch`, and what the Glimind router tells agents to do) also works: send the base64 v1 envelope in `X-PAYMENT` and this origin maps it onto the acceptance WE publish for the route being called, then runs the identical SDK verification and settlement — the EIP-712 `TransferWithAuthorization` a v1 client signs is byte-for-byte the one a v2 client signs, so nothing is trusted from the caller. A v1 payment for another wallet, another amount or another route is left alone and gets the normal 402.", "",
@@ -845,6 +846,71 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "Source: https://github.com/kaminariouji/x402-audit-agent",
 ].join("\n")));
 
+// ---- legacy x402 v1 CHALLENGE encoder: the other half of the bridge ----
+// The bridge below only fixes the REQUEST direction. A genuine v1 buyer (x402-fetch / x402-axios 1.x,
+// which is exactly what Glimind's "resend the call with an X-PAYMENT header" instruction drives) reads
+// the 402 out of the response BODY and runs every entry through PaymentRequirementsSchema
+// (x402@1.2.0 dist/esm/chunk-V3RMM5AE.mjs:437). That schema needs a SHORT network name (it is a z.enum:
+// "base", "solana", … — CAIP-2 fails), and requires maxAmountRequired, resource (a URL), description,
+// mimeType and asset. Our SDK publishes v2 terms in the PAYMENT-REQUIRED header (network eip155:8453,
+// `amount`, no asset), so the real library threw at schema-parse before it could sign anything
+// (measured end-to-end in legacy-client-dryrun.mjs).
+// The PAYMENT-REQUIRED header is left byte-for-byte alone, so the gate, the bridge's own acceptance
+// lookup and every v2 SDK client see exactly what they saw before; only the human-readable body gains
+// a v1 view of the SAME server-owned terms. Same money, two envelopes.
+const V1_NETWORK = { [NETWORK]: "base", [SOLANA_NETWORK]: "solana" };
+const ASSET_BY_NETWORK = {
+  [NETWORK]: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  [SOLANA_NETWORK]: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+};
+const ROUTE_BLURB = new Map(PAYABLE_ROUTES.map((r) => [`${r.method} ${r.path}`, r.description || r.note || SERVICE_NAME]));
+function toV1Accept(a, req) {
+  const network = V1_NETWORK[a.network];
+  const amount = String(a.amount ?? "");
+  if (!network || !/^\d+$/.test(amount)) return null;
+  return {
+    scheme: "exact",
+    network,
+    maxAmountRequired: amount,
+    resource: `${PUBLIC_URL}${req.path}`,
+    description: String(ROUTE_BLURB.get(`${req.method.toUpperCase()} ${req.path}`) ?? SERVICE_NAME).slice(0, 500),
+    mimeType: "application/json",
+    payTo: a.payTo,
+    maxTimeoutSeconds: Number(a.maxTimeoutSeconds ?? 300),
+    asset: ASSET_BY_NETWORK[a.network],
+    ...(a.extra ? { extra: a.extra } : {}),
+  };
+}
+app.use((req, res, next) => {
+  const json = res.json.bind(res);
+  res.json = (body) => {
+    try {
+      if (res.statusCode === 402) {
+        let v2 = Array.isArray(body?.accepts) ? body : null;
+        // Some SDK paths only set the base64 header; decode it rather than invent terms.
+        if (!v2) {
+          const raw = res.getHeader("payment-required") ?? res.getHeader("x-payment-required");
+          if (typeof raw === "string" && raw) v2 = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+        }
+        const accepts = (v2?.accepts ?? []).map((a) => toV1Accept(a, req)).filter(Boolean);
+        if (accepts.length) return json({ x402Version: 1, error: v2.error ?? "Payment required", accepts });
+      }
+    } catch {
+      // Never let the legacy encoder swallow the challenge: fall through with the SDK's own body.
+    }
+    return json(body);
+  };
+  const setHeader = res.setHeader.bind(res);
+  res.setHeader = (name, value) => {
+    // v1 clients surface the settlement receipt under X-PAYMENT-RESPONSE; v2 dropped the prefix.
+    if (String(name).toLowerCase() === "payment-response") {
+      setHeader("X-PAYMENT-RESPONSE", value);
+      setHeader("Access-Control-Expose-Headers", "X-PAYMENT-RESPONSE, PAYMENT-RESPONSE");
+    }
+    return setHeader(name, value);
+  };
+  next();
+});
 // ---- legacy x402 v1 wire bridge ----
 // Glimind is the router buyer agents consult BEFORE calling an external tool, and we are listed there
 // live and marked x402/automatable (toolId mcp-registry/io.github.kaminariouji/x402-audit-agent/*) — but

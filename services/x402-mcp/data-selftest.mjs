@@ -1,6 +1,10 @@
 // Selftest for the paid market-data routes: hits each real upstream and asserts the shape
 // the buyer receives. Run from services/x402-mcp: `node data-selftest.mjs`.
-import { topMarkets, chainTvl, stablecoinSnapshot, trendingBoosted, gasPrices } from "./server.mjs";
+// The port MUST be pinned before server.mjs evaluates: importing it statically would bind the host
+// to 10000 and silently take over the origin ngrok publishes (that happened once — see project
+// memory). Dynamic import after the override makes the failure mode impossible.
+process.env.PORT ??= "10995";
+const { topMarkets, chainTvl, stablecoinSnapshot, trendingBoosted, gasPrices } = await import("./server.mjs");
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join} from "node:path";
 import { tmpdir } from "node:os";
@@ -59,6 +63,27 @@ for (let i = 0; i < 40 && !up; i++) {
   if (!up) await new Promise((r) => setTimeout(r, 250));
 }
 check("server is listening", up, base);
+// The 402 BODY is a separate contract from the header: legacy x402 v1 buyers (x402-fetch 1.x, which
+// is what "resend with an X-PAYMENT header" instructions drive) parse the body through a schema we do
+// not own. So the assertion uses their library's real parser, not our opinion of it.
+const v1raw = await fetch(base + "/price?address=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
+const v1body = await v1raw.json().catch(() => ({}));
+const v1hdr = JSON.parse(Buffer.from(v1raw.headers.get("payment-required") || "{}", "base64").toString());
+{
+  const nets = (v1body.accepts ?? []).map((a) => a.network);
+  let parsed = 0, parseErr = "";
+  try {
+    const { PaymentRequirementsSchema } = await import("x402/types");
+    parsed = (v1body.accepts ?? []).map((a) => PaymentRequirementsSchema.parse(a)).length;
+  } catch (e) { parseErr = String(e?.message || e).slice(0, 200); }
+  console.log(`v1 402 body: x402Version=${v1body.x402Version} networks=${nets.join(",") || "(none)"} ${parseErr}`);
+  check("402 body parses under the REAL v1 client schema", parsed >= 1, parseErr || JSON.stringify(v1body).slice(0, 200));
+  check("402 body declares x402Version 1 for legacy buyers", v1body.x402Version === 1, String(v1body.x402Version));
+  check("legacy body leads with Base", nets[0] === "base", nets.join(","));
+  check("legacy accepts carry maxAmountRequired + asset + resource URL", (v1body.accepts ?? []).every((a) => /^\d+$/.test(String(a.maxAmountRequired)) && /^[0-9a-zA-Z]{30,46}$/.test(String(a.asset)) && /^https:\/\/.+\/price$/.test(String(a.resource))), JSON.stringify(v1body.accepts?.[0] || {}).slice(0, 220));
+  check("v1 price equals the v2 header price (same terms, two envelopes)", String(v1body.accepts?.[0]?.maxAmountRequired) === String(v1hdr?.accepts?.[0]?.amount), `${v1body.accepts?.[0]?.maxAmountRequired} vs ${v1hdr?.accepts?.[0]?.amount}`);
+  check("v2 header challenge stays CAIP-2 (gate + bridge unaffected)", v1hdr?.accepts?.[0]?.network === "eip155:8453" && !!v1hdr?.accepts?.[0]?.amount, JSON.stringify(v1hdr?.accepts?.[0] || {}).slice(0, 180));
+}
 const challengeOf = async (path, opts) => {
   const r = await fetch(base + path, opts);
   return { status: r.status, body: JSON.parse(Buffer.from(r.headers.get("payment-required") || "{}", "base64").toString()) };
@@ -271,6 +296,7 @@ check("x402 fan-out declares per-call pricing usable by maxPrice filters", wk.pr
 const llms = await (await fetch(base + "/llms.txt")).text();
 check("llms.txt names PAYMENT-SIGNATURE as the header to send", /PAYMENT-SIGNATURE/.test(llms), "missing");
 check("llms.txt documents that v1 X-PAYMENT now works on Base", /X-PAYMENT/.test(llms) && /Both wire versions are accepted/.test(llms), "v1 support undocumented");
+check("llms.txt tells legacy buyers the 402 BODY is v1-shaped too", /x402Version:1/.test(llms) && /maxAmountRequired/.test(llms) && /X-PAYMENT-RESPONSE/.test(llms), "v1 challenge body undocumented");
 check("llms.txt does not present x402Fetch as the happy path", !/await x402Fetch\(/.test(llms), "still shows x402Fetch usage");
 const snippet = (llms.match(/```js\n([\s\S]*?)```/) || [, ""])[1];
 check("llms.txt ships a javascript recipe", snippet.includes("createPaymentPayload") && snippet.includes("encodePaymentSignatureHeader"), snippet.slice(0, 60));

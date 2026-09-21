@@ -9,7 +9,8 @@
 // Run: cd services/x402-mcp && node paid-roundtrip.mjs
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { privateKeyToAccount } from "viem/accounts";
+import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+import { wrapFetchWithPayment } from "x402-fetch";
 import { recoverTypedDataAddress } from "viem";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
@@ -302,6 +303,21 @@ const garbage = await fetch(priceUrl, { headers: { "x-payment": "not-even-base64
 check("garbage X-PAYMENT -> 402, never 500", garbage.status === 402, String(garbage.status));
 const bothHeaders = await fetch(priceUrl, { headers: { ...http.encodePaymentSignatureHeader(payload), "x-payment": v1(payload, { authorization: { to: "0x1111111111111111111111111111111111111111" } }) } });
 check("a real v2 header wins: a hostile X-PAYMENT cannot shadow it", bothHeaders.status === 200, String(bothHeaders.status));
+
+// ---- the REAL third-party v1 buyer, not our own envelope ----
+// x402-fetch is the shipped Coinbase legacy client that "resend the call with an X-PAYMENT header"
+// actually drives in the wild. It parses our 402 BODY with its own zod schema (which needs short
+// network names, maxAmountRequired, asset, resource, description, mimeType) before it will sign
+// anything, so if it settles against our server, the whole v1 buyer population is reachable.
+// createSigner() is a convenience wrapper around a specific viem major; the repo's own viem account
+// satisfies the same isEvmSignerWallet duck-type the library checks, so hand the account over directly.
+const legacySigner = privateKeyToAccount(generatePrivateKey());
+const legacyFetch = wrapFetchWithPayment(fetch, legacySigner);
+const legacyRes = await legacyFetch(priceUrl);
+const legacyJson = await legacyRes.json().catch(() => ({}));
+check("REAL x402-fetch client parses our challenge and pays -> 200", legacyRes.status === 200, String(legacyRes.status));
+check("REAL x402-fetch client receives live market data", Number(legacyJson?.priceUsd ?? 0) > 0, JSON.stringify(legacyJson).slice(0, 120));
+check("REAL x402-fetch client sees its X-PAYMENT-RESPONSE receipt", !!legacyRes.headers.get("x-payment-response"), JSON.stringify([...legacyRes.headers.keys()]).slice(0, 200));
 
 child.kill();
 mock.close();
