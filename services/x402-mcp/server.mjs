@@ -632,11 +632,11 @@ app.get("/openapi.json", (_req, res) => res.json({
     title: "crypto-bot-honesty-audit", version: "1.0.0",
     description: "Pay-per-call x402 agent: crypto-bot honesty scan plus keyless per-call crypto market data (price, search, market cap, TVL, stablecoins, trending, gas).",
     contact: { url: "https://github.com/kaminariouji/x402-audit-agent" },
-    "x-guidance": "Paid routes, no signup and no API key. (1) POST /audit body { code, filename } -> 0.05 USDC. (2) GET /price?address=0x.. -> 0.01 USDC. (3) GET /search_tokens?q=name -> 0.01 USDC. (4) GET /markets?vs=usd&limit=25, /tvl?limit=25, /stablecoins?limit=20, /trending?limit=10&chain=base, /gas?chains=base,arbitrum -> 0.01 USDC each. Unpaid -> HTTP 402 with x402 terms; pay USDC on Base (eip155:8453) or Solana (solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp) via an x402 client and retry. MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.",
+    "x-guidance": `Paid routes, no signup and no API key. (1) POST /audit body { code, filename } -> ${PRICE} USDC. (2) GET /price?address=0x.. -> ${PRICE_DATA} USDC. (3) GET /search_tokens?q=name -> ${PRICE_DATA} USDC. (4) GET /markets?vs=usd&limit=25, /tvl?limit=25, /stablecoins?limit=20, /trending?limit=10&chain=base, /gas?chains=base,arbitrum -> ${PRICE_DATA} USDC each. Unpaid -> HTTP 402 with x402 terms on the PAYMENT-REQUIRED header; pay USDC on Base (${NETWORK}) or Solana (${SOLANA_NETWORK}) via an x402 client and resend with the payment in the PAYMENT-SIGNATURE header (v2 wire format — X-PAYMENT is the retired v1 name). MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.`,
   },
   servers: [{ url: PUBLIC_URL }],
   security: [{ x402: [] }],
-  components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "X-PAYMENT", description: `x402 USDC payment on ${NETWORK} or ${SOLANA_NETWORK}; the 402 challenge lists both accepts. Settle one, then resend with the X-PAYMENT header.` } } },
+  components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "PAYMENT-SIGNATURE", description: `x402 v2 USDC payment on ${NETWORK} or ${SOLANA_NETWORK}; the 402 challenge on the PAYMENT-REQUIRED header lists both accepts. Settle one, then resend with the payment in PAYMENT-SIGNATURE. (X-PAYMENT is the retired v1 header name and is NOT read here.)` } } },
   paths: { "/audit": { post: {
     summary: "Audit a crypto-bot source file (paid via x402)",
     "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: PRICE.slice(1) } },
