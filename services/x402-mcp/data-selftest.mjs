@@ -1,6 +1,10 @@
 // Selftest for the paid market-data routes: hits each real upstream and asserts the shape
 // the buyer receives. Run from services/x402-mcp: `node data-selftest.mjs`.
 import { topMarkets, chainTvl, stablecoinSnapshot, trendingBoosted, gasPrices } from "./server.mjs";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { join} from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 const fails = [];
 function check(name, cond, detail) {
@@ -183,6 +187,21 @@ check("catalog hrefs are all absolute https on our origin", catLinks.every((l) =
 check("every response advertises Link: rel=api-catalog", /rel="api-catalog"/.test(cat.headers.get("link") || ""), String(cat.headers.get("link")));
 const gateLink = (await fetch(base + "/gas")).headers.get("link") || "";
 check("the 402 challenge itself carries the catalog Link header", /rel="api-catalog"/.test(gateLink), gateLink);
+
+// The buyer-facing recipe in /llms.txt is what converts a 402 into money, and it previously told buyers
+// to use the v1 x402-fetch/X-PAYMENT path this origin ignores — a doc bug that 402s a payer forever.
+// So: assert the header name is right AND that the published code actually parses.
+const llms = await (await fetch(base + "/llms.txt")).text();
+check("llms.txt names PAYMENT-SIGNATURE as the header to send", /PAYMENT-SIGNATURE/.test(llms), "missing");
+check("llms.txt warns off the v1 x402-fetch/X-PAYMENT path", /x402-fetch/.test(llms) && /X-PAYMENT/.test(llms) && /Do NOT use/.test(llms), "no warning");
+check("llms.txt does not present x402Fetch as the happy path", !/await x402Fetch\(/.test(llms), "still shows x402Fetch usage");
+const snippet = (llms.match(/```js\n([\s\S]*?)```/) || [, ""])[1];
+check("llms.txt ships a javascript recipe", snippet.includes("createPaymentPayload") && snippet.includes("encodePaymentSignatureHeader"), snippet.slice(0, 60));
+const snippetFile = join(tmpdir(), `published-buyer-snippet-${process.pid}.mjs`);
+writeFileSync(snippetFile, snippet.replace("process.env.BUYER_PRIVATE_KEY", '"0x" + "1".repeat(64)'));
+const checked = spawnSync(process.execPath, ["--check", snippetFile], { encoding: "utf8" });
+check("the published buyer snippet PARSES as real JS", checked.status === 0, (checked.stderr || "").split("\n")[0]);
+try { unlinkSync(snippetFile); } catch {}
 
 if (fails.length) {
   console.log(`\nSELFTEST FAIL (${fails.length}): ${fails.join(", ")}`);
