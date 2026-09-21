@@ -110,6 +110,15 @@ for (const [path, method] of [["/price", "GET"], ["/markets", "GET"], ["/audit",
 const mm = await (await fetch(base + "/price", { method: "PUT" })).json();
 check("405 body names working method + price", mm.paid_endpoint === "GET /price" && mm.paywall?.price === "$0.001", JSON.stringify(mm).slice(0, 160));
 
+// The SDK reads ONLY PAYMENT-SIGNATURE (chunk-UF6R7D6H extractPayment); our own openapi once told
+// buyers to send the retired v1 X-PAYMENT header, which would 402 them forever. Never regress.
+const oa = await (await fetch(base + "/openapi.json")).json();
+const scheme = oa.components?.securitySchemes?.x402?.name;
+check("openapi securityScheme is PAYMENT-SIGNATURE", scheme === "PAYMENT-SIGNATURE", String(scheme));
+const guidance = String(oa.info?.["x-guidance"] ?? "");
+check("openapi guidance has no stale X-PAYMENT advice", !/resend with the X-PAYMENT header/.test(guidance), "still tells buyers to use X-PAYMENT");
+check("openapi guidance quotes the live prices", guidance.includes("$0.01") && guidance.includes("$0.001"), guidance.slice(0, 200));
+
 if (fails.length) {
   console.log(`\nSELFTEST FAIL (${fails.length}): ${fails.join(", ")}`);
   process.exit(1);
