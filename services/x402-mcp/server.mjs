@@ -539,10 +539,16 @@ app.use((req, res, next) => {
 });
 
 // ---- free metadata (registered BEFORE the payment gate) ----
+// RFC 9727 service catalog: how a crawler finds /openapi.json without being told. x402scan publishes one
+// itself, so this mirrors their shape. The Link header goes on every response — including the 402 — so a
+// buyer that just got paywalled immediately learns where the machine-readable contract lives.
+const API_CATALOG_LINK = '</.well-known/api-catalog>; rel="api-catalog", </openapi.json>; rel="service-desc"; type="application/vnd.oai.openapi+json"';
+app.use((_req, res, next) => { res.set("Link", API_CATALOG_LINK); next(); });
+
 app.get("/health", (_req, res) => res.json({ ok: true, kind: "mcp+http", ...PAYMENT_INFO }));
 app.get("/", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
-  endpoints: { paid: [`POST /audit (crypto-bot honesty scan, ${PRICE})`, "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "GET /markets?vs=usd&limit=25 (top coins by market cap)", "GET /tvl?limit=25 (chain TVL ranking)", "GET /stablecoins?limit=20 (pegged supply)", "GET /trending?limit=10 (promoted DEX tokens with quotes)", "GET /gas?chains=base,arbitrum (live gwei)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
+  endpoints: { paid: [`POST /audit (crypto-bot honesty scan, ${PRICE})`, "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "GET /markets?vs=usd&limit=25 (top coins by market cap)", "GET /tvl?limit=25 (chain TVL ranking)", "GET /stablecoins?limit=20 (pegged supply)", "GET /trending?limit=10 (promoted DEX tokens with quotes)", "GET /gas?chains=base,arbitrum (live gwei)", "POST /mcp (tools/call audit_bot_code)"], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/api-catalog", "/.well-known/x402", "/.well-known/x402-info", "MCP demo_audit"] },
   ...PAYMENT_INFO,
 }));
 app.get("/audit", (_req, res) => res.status(405).json({
@@ -612,11 +618,38 @@ app.use((req, res, next) => {
     probe: `this service is LIVE; send ${route.method} with an x402 payment (${route.price} USDC) to use it`,
   });
 });
+app.get("/.well-known/api-catalog", (_req, res) => {
+  const at = (href) => PUBLIC_URL + href;
+  const link = (rel, href, type, title) => ({ rel, href: at(href), type, title });
+  res.type("application/linkset+json").json({
+    linkset: [{
+      anchor: at("/openapi.json"),
+      "service-desc": [{ href: at("/openapi.json"), type: "application/vnd.oai.openapi+json", title: "x402 audit + market-data OpenAPI specification" }],
+      "service-doc": [{ href: at("/llms.txt"), type: "text/plain", title: "Agent briefing: prices, endpoints, how to pay" }],
+      status: [{ href: at("/health"), type: "application/json", title: "Service health" }],
+      links: [
+        link("service-desc", "/openapi.json", "application/vnd.oai.openapi+json", "OpenAPI 3.1 contract for every paid route"),
+        link("service-doc", "/llms.txt", "text/plain", "crypto-bot-honesty-audit agent briefing"),
+        link("status", "/health", "application/json", "Liveness + payment info"),
+        link("describedby", "/discovery/resources", "application/json", "x402 fan-out: every payable route with its challenge"),
+        link("describedby", "/.well-known/x402", "application/json", "x402 resource index with wallet ownership proof"),
+      ],
+    }, {
+      anchor: at("/mcp"),
+      "service-desc": [{ href: at("/.well-known/x402"), type: "application/json", title: "x402 resource index" }],
+      links: [
+        link("service-desc", "/openapi.json", "application/vnd.oai.openapi+json", "HTTP contract"),
+        link("sse", "/mcp", "application/json", "MCP Streamable-HTTP endpoint (9 tools, x402-metered per call)"),
+      ],
+    }],
+  });
+});
 // Deliberately permissive: every route is public (payment is enforced per-request, not by
 // crawling policy), and the LLMs field points agents at the machine-readable service terms.
 app.get("/robots.txt", (_req, res) => res.type("text/plain").send([
   "User-agent: *", "Allow: /", "", `LLMs: ${PUBLIC_URL}/llms.txt`,
   `Sitemap hint: ${PUBLIC_URL}/.well-known/x402-info`,
+  `Service catalog (RFC 9727): ${PUBLIC_URL}/.well-known/api-catalog`,
   `x402 resource fan-out: ${PUBLIC_URL}/discovery/resources`, "",
 ].join("\n")));
 app.get("/.well-known/x402-info", (_req, res) => res.json({
@@ -635,7 +668,7 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
     { path: "/trending", method: "GET", price: PRICE_DATA, note: "promoted DEX tokens with quotes by ?limit=10&chain=" },
     { path: "/gas", method: "GET", price: PRICE_DATA, note: "live gwei for base,arbitrum by ?chains=" },
     { path: "/mcp", method: "POST", price: PRICE, note: "per tools/call audit_bot_code" },
-  ], freeEndpoints: ["/", "/health", "/llms.txt", "/robots.txt", "/discovery/resources", "/openapi.json", "/.well-known/x402-info", "MCP demo_audit"] },
+  ], freeEndpoints: ["/", "/health", "/llms.txt", "/robots.txt", "/discovery/resources", "/openapi.json", "/.well-known/api-catalog", "/.well-known/x402-info", "MCP demo_audit"] },
   capabilities: ["analyze", "audit", "classify", "market-data", "price", "search", "markets", "market-cap", "tvl", "defi", "stablecoins", "trending", "gas", "fees", "transaction-cost"],
   payTo: { [NETWORK]: PAY_TO, [SOLANA_NETWORK]: PAY_TO_SOLANA },
 }));
@@ -707,6 +740,7 @@ app.get("/openapi.json", (_req, res) => res.json({
     ["/discovery/resources", "Fan-out list of every payable route with its challenge"],
     ["/.well-known/x402-info", "x402 merchant metadata"],
     ["/.well-known/x402", "x402 resource index with ownership proof"],
+    ["/.well-known/api-catalog", "RFC 9727 service catalog (linkset)"],
   ].map(([p, d]) => [p, { get: freeOp(d) }])), },
 }));
 app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
