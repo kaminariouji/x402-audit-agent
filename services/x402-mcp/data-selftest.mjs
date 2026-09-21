@@ -74,11 +74,9 @@ check("audit 402 offers Solana mainnet", aNets.some((n) => n.startsWith("solana:
 check("audit payTo distinct per network", new Set(aPays).size === 2, aPays.join(","));
 check("audit payTo is one EVM + one base58", aPays.some((p) => /^0x[a-fA-F0-9]{40}$/.test(p)) && aPays.some((p) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(p)), aPays.join(","));
 // Ordering is a money-path decision, not cosmetics: x402HTTPClient's DEFAULT selector takes
-// accepts[0]. Both rails fail today, but for different owners: Base is refused by OUR facilitator
-// choice (stranger-verify.mjs: 8/8 services on payai refused identically) and a free CDP key fixes
-// it, while Solana dies on OUR receive account — payTo has no USDC ATA and 0 lamports, and the SDK
-// client never creates the destination ATA (sol-receive-probe.mjs), so no buyer can settle there
-// until rent is paid. Base therefore leads.
+// accepts[0]. Measured: payai VERIFIES our Base EIP-3009 payments (3/3 fresh zero-balance keys fail
+// only on balance — evm-key-ab.mjs), while Solana cannot settle at all because our payTo has no funded
+// USDC ATA and the SDK client never creates the destination ATA (sol-receive-probe.mjs). Base leads.
 check("Base leads accepts (default buyer route)", aNets[0] === "eip155:8453", aNets.join(","));
 const dAccepts0 = (await challengeOf("/markets")).body.accepts || [];
 check("data accepts lead with Base too", dAccepts0[0]?.network === "eip155:8453", dAccepts0.map((a) => a.network).join(","));
@@ -225,8 +223,12 @@ check("llms.txt ships a javascript recipe", snippet.includes("createPaymentPaylo
 check("llms.txt recipe defaults to the Base acceptance", /@x402\/evm\/exact\/client/.test(snippet) && /accepts\[0\]/.test(snippet) && !/ExactSvmScheme/.test(snippet), snippet.slice(0, 80));
 // Buyer-facing copy may not promise a rail we know is dead: our Solana payTo has no funded USDC ATA,
 // so llms.txt has to say so instead of implying a funded buyer settles there.
+// Regression guard for a real published lie: we once told buyers that payai rejects every EIP-3009
+// signature on Base. It does not — that reading came from reusing the anvil test key, which payai
+// denylists (evm-key-ab.mjs). Never let the discouraged-buyer wording come back.
+check("llms.txt does not tell buyers our Base rail is broken", !/refuses every EIP-3009|may 402 you on a correct payment/.test(llms), "stale refusal claim republished");
+check("llms.txt states Base verifies and only balance fails", /invalid_exact_evm_insufficient_balance/.test(llms) && /verifies a correctly-signed/.test(llms), "missing the measured verify result");
 check("llms.txt discloses the unfunded Solana ATA", /0\.00203928 SOL/.test(llms) && /ATA/.test(llms) && /rent/.test(llms), "ATA rent not disclosed");
-check("llms.txt tells a buyer a refused payment costs nothing", /costs you nothing/.test(llms), "missing no-loss statement");
 check("llms.txt keeps the Base domain-separator proof", /DOMAIN_SEPARATOR/.test(llms) && /TransferWithAuthorization/.test(llms), "lost the EIP-712 detail");
 const snippetFile = join(tmpdir(), `published-buyer-snippet-${process.pid}.mjs`);
 writeFileSync(snippetFile, snippet.replace("process.env.BUYER_PRIVATE_KEY", '"0x" + "1".repeat(64)'));
