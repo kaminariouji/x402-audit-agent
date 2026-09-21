@@ -74,12 +74,14 @@ check("audit 402 offers Solana mainnet", aNets.some((n) => n.startsWith("solana:
 check("audit payTo distinct per network", new Set(aPays).size === 2, aPays.join(","));
 check("audit payTo is one EVM + one base58", aPays.some((p) => /^0x[a-fA-F0-9]{40}$/.test(p)) && aPays.some((p) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(p)), aPays.join(","));
 // Ordering is a money-path decision, not cosmetics: x402HTTPClient's DEFAULT selector takes
-// accepts[0], so entry zero is where an unconfigured buyer's payment lands. Measured against the
-// production facilitator with a zero-balance key: Solana reaches on-chain simulation (wire good,
-// funds missing) while Base refuses every EIP-3009 signature it is handed. Solana must stay first.
-check("Solana leads accepts (default buyer route)", aNets[0].startsWith("solana:5eykt"), aNets.join(","));
+// accepts[0]. Both rails fail today, but for different owners: Base is refused by OUR facilitator
+// choice (stranger-verify.mjs: 8/8 services on payai refused identically) and a free CDP key fixes
+// it, while Solana dies on OUR receive account — payTo has no USDC ATA and 0 lamports, and the SDK
+// client never creates the destination ATA (sol-receive-probe.mjs), so no buyer can settle there
+// until rent is paid. Base therefore leads.
+check("Base leads accepts (default buyer route)", aNets[0] === "eip155:8453", aNets.join(","));
 const dAccepts0 = (await challengeOf("/markets")).body.accepts || [];
-check("data accepts lead with Solana too", dAccepts0[0]?.network?.startsWith("solana:5eykt"), dAccepts0.map((a) => a.network).join(","));
+check("data accepts lead with Base too", dAccepts0[0]?.network === "eip155:8453", dAccepts0.map((a) => a.network).join(","));
 check("audit priced 0.01 USDC on both", (audit.body.accepts || []).every((a) => a.amount === "10000"), JSON.stringify(audit.body.accepts?.map((a) => a.amount)));
 const data = await challengeOf("/markets");
 const dNets = (data.body.accepts || []).map((a) => a.network);
@@ -219,8 +221,13 @@ check("llms.txt warns off the v1 x402-fetch/X-PAYMENT path", /x402-fetch/.test(l
 check("llms.txt does not present x402Fetch as the happy path", !/await x402Fetch\(/.test(llms), "still shows x402Fetch usage");
 const snippet = (llms.match(/```js\n([\s\S]*?)```/) || [, ""])[1];
 check("llms.txt ships a javascript recipe", snippet.includes("createPaymentPayload") && snippet.includes("encodePaymentSignatureHeader"), snippet.slice(0, 60));
-// The recipe must point at the network that can actually settle (see the accepts-order check above).
-check("llms.txt recipe defaults to the Solana acceptance", /solana:/.test(snippet) && !/startsWith\("eip155:"\)/.test(snippet), snippet.slice(0, 80));
+// The recipe must point at the network named by accepts[0] (see the ordering check above).
+check("llms.txt recipe defaults to the Base acceptance", /@x402\/evm\/exact\/client/.test(snippet) && /accepts\[0\]/.test(snippet) && !/ExactSvmScheme/.test(snippet), snippet.slice(0, 80));
+// Buyer-facing copy may not promise a rail we know is dead: our Solana payTo has no funded USDC ATA,
+// so llms.txt has to say so instead of implying a funded buyer settles there.
+check("llms.txt discloses the unfunded Solana ATA", /0\.00203928 SOL/.test(llms) && /ATA/.test(llms) && /rent/.test(llms), "ATA rent not disclosed");
+check("llms.txt tells a buyer a refused payment costs nothing", /costs you nothing/.test(llms), "missing no-loss statement");
+check("llms.txt keeps the Base domain-separator proof", /DOMAIN_SEPARATOR/.test(llms) && /TransferWithAuthorization/.test(llms), "lost the EIP-712 detail");
 const snippetFile = join(tmpdir(), `published-buyer-snippet-${process.pid}.mjs`);
 writeFileSync(snippetFile, snippet.replace("process.env.BUYER_PRIVATE_KEY", '"0x" + "1".repeat(64)'));
 const checked = spawnSync(process.execPath, ["--check", snippetFile], { encoding: "utf8" });
