@@ -96,6 +96,20 @@ const rt = await rob.text();
 check("GET /robots.txt -> 200 free", rob.status === 200, rob.status);
 check("robots allows all + points at llms.txt", /Allow: \//.test(rt) && /\/llms\.txt/.test(rt), rt.replace(/\n/g, " | "));
 
+// Indexers walk the whole verb matrix against a payable path; a 404/400 looks like a dead route
+// and the service gets skipped, so every mismatch must declare the working method + price.
+for (const [path, method] of [["/price", "GET"], ["/markets", "GET"], ["/audit", "POST"], ["/mcp", "POST"]]) {
+  for (const verb of [method === "GET" ? "POST" : "GET", "PATCH", "PUT", "DELETE", "HEAD"]) {
+    const r = await fetch(base + path, { method: verb, headers: { "content-type": "application/json" }, body: ["POST", "PATCH", "PUT", "DELETE"].includes(verb) ? "{}" : undefined });
+    check(`${verb} ${path} -> 405 (never 404/400)`, r.status === 405, String(r.status));
+  }
+  const gate = await fetch(base + path, { method, headers: { "content-type": "application/json" }, body: method === "POST" ? "{}" : undefined });
+  check(`${method} ${path} still gated 402`, gate.status === 402, String(gate.status));
+  check(`OPTIONS ${path} free for preflight`, (await fetch(base + path, { method: "OPTIONS" })).status === 200, "not 200");
+}
+const mm = await (await fetch(base + "/price", { method: "PUT" })).json();
+check("405 body names working method + price", mm.paid_endpoint === "GET /price" && mm.paywall?.price === "$0.001", JSON.stringify(mm).slice(0, 160));
+
 if (fails.length) {
   console.log(`\nSELFTEST FAIL (${fails.length}): ${fails.join(", ")}`);
   process.exit(1);
