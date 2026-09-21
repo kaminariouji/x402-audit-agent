@@ -519,6 +519,15 @@ httpServer.requiresPayment = function (context) {
 const app = express();
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "2mb" }));
+// x402scan's discovery contract fails an origin with "Expected 402, got 400": if body parsing throws
+// before the payment gate, a crawler never sees our challenge and skips the service. Swallow the parse
+// error here and let the route answer 400 only once the call has actually been paid for.
+app.use((err, req, res, next) => {
+  if (!(err instanceof SyntaxError && "body" in err)) return next(err);
+  req.body = {};
+  req.bodyParseError = true;
+  next();
+});
 
 // Access log: without it we cannot tell a crawler from a payer. 2xx on a paid route = money moved.
 app.use((req, res, next) => {
@@ -630,10 +639,35 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
   capabilities: ["analyze", "audit", "classify", "market-data", "price", "search", "markets", "market-cap", "tvl", "defi", "stablecoins", "trending", "gas", "fees", "transaction-cost"],
   payTo: { [NETWORK]: PAY_TO, [SOLANA_NETWORK]: PAY_TO_SOLANA },
 }));
+// The x402scan discovery contract is picky in ways the x402 spec isn't: protocols must be an array of
+// PROTOCOL OBJECTS, prices are decimal USD, and a paid operation with no response schema is rejected as
+// "Input/Output Schema Missing". All three are silent registration failures, so encode them once here.
+const usdPrice = (p) => Number(String(p).slice(1)).toFixed(6);
+const xpi = (amount) => ({ protocols: [{ x402: {} }], price: { mode: "fixed", currency: "USD", amount: usdPrice(amount) } });
+const OBJ = (description, properties = {}, required = []) => ({
+  type: "object", description, additionalProperties: true,
+  ...(Object.keys(properties).length ? { properties } : {}), ...(required.length ? { required } : {}),
+});
+const ROWS = (description, key) => OBJ(description, { [key]: { type: "array", items: { type: "object", additionalProperties: true } } }, [key]);
+// Returns a METHOD-KEYED path item (OpenAPI requires paths -> {path} -> {verb} -> operation).
+const paidOp = (verb, summary, amount, input, output) => ({ [verb]: {
+  summary,
+  "x-payment-info": xpi(amount),
+  security: [{ x402: [] }],
+  ...(input.body ? { requestBody: { required: true, content: { "application/json": { schema: input.body } } } } : {}),
+  ...(input.params ? { parameters: input.params.map(([name, required, description, type]) => ({ name, in: "query", required, description, schema: { type } })) } : {}),
+  responses: {
+    200: { description: "Payload, served only after settlement.", content: { "application/json": { schema: output } } },
+    402: { description: "Payment required — x402 terms on the PAYMENT-REQUIRED header.", content: { "application/json": { schema: OBJ("payment requirements", { error: { type: "string" }, maxAmountRequired: { type: "string" } }) } } },
+  },
+} });
+// Endpoints we neither charge for nor want probed. Undeclared or unclassified paths get crawled as if
+// they were paid, answer no 402, and the scanner logs it as "No 402 challenge" against the whole origin.
+const freeOp = (summary) => ({ summary, security: [], responses: { 200: { description: "Public metadata, no payment.", content: { "application/json": { schema: OBJ("metadata", {}, []) } } } } });
 app.get("/openapi.json", (_req, res) => res.json({
-  openapi: "3.0.0",
+  openapi: "3.1.0",
   info: {
-    title: "crypto-bot-honesty-audit", version: "1.0.0",
+    title: "crypto-bot-honesty-audit", version: "1.1.0",
     description: "Pay-per-call x402 agent: crypto-bot honesty scan plus keyless per-call crypto market data (price, search, market cap, TVL, stablecoins, trending, gas).",
     contact: { url: "https://github.com/kaminariouji/x402-audit-agent" },
     "x-guidance": `Paid routes, no signup and no API key. (1) POST /audit body { code, filename } -> ${PRICE} USDC. (2) GET /price?address=0x.. -> ${PRICE_DATA} USDC. (3) GET /search_tokens?q=name -> ${PRICE_DATA} USDC. (4) GET /markets?vs=usd&limit=25, /tvl?limit=25, /stablecoins?limit=20, /trending?limit=10&chain=base, /gas?chains=base,arbitrum -> ${PRICE_DATA} USDC each. Unpaid -> HTTP 402 with x402 terms on the PAYMENT-REQUIRED header; pay USDC on Base (${NETWORK}) or Solana (${SOLANA_NETWORK}) via an x402 client and resend with the payment in the PAYMENT-SIGNATURE header (v2 wire format — X-PAYMENT is the retired v1 name). MCP tool audit_bot_code on POST /mcp is metered the same way; demo_audit is free.`,
@@ -641,35 +675,39 @@ app.get("/openapi.json", (_req, res) => res.json({
   servers: [{ url: PUBLIC_URL }],
   security: [{ x402: [] }],
   components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "PAYMENT-SIGNATURE", description: `x402 v2 USDC payment on ${NETWORK} or ${SOLANA_NETWORK}; the 402 challenge on the PAYMENT-REQUIRED header lists both accepts. Settle one, then resend with the payment in PAYMENT-SIGNATURE. (X-PAYMENT is the retired v1 header name and is NOT read here.)` } } },
-  paths: { "/audit": { post: {
-    summary: "Audit a crypto-bot source file (paid via x402)",
-    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: PRICE.slice(1) } },
-    security: [{ x402: [] }],
-    requestBody: { required: true, content: { "application/json": { schema: { type: "object",
-      properties: { code: { type: "string", description: "one JS/TS file" }, filename: { type: "string" } }, required: ["code"] } } } },
-    responses: { 200: { description: "findings[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
-  } }, "/price": { get: {
-    summary: "Live token spot price + liquidity by contract address, EVM or Solana (paid via x402)",
-    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: PRICE_DATA.slice(1) } },
-    security: [{ x402: [] }],
-    parameters: [{ name: "address", in: "query", required: true, description: "Token contract address: EVM (0x…, 42 hex) or Solana base58 mint (32-44 chars)", schema: { type: "string" } }],
-    responses: { 200: { description: "priceUsd/liquidity/fdv after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
-  } }, "/search_tokens": { get: {
-    summary: "Search crypto tokens by name/symbol; returns highest-liquidity matched pairs (paid via x402)",
-    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: PRICE_DATA.slice(1) } },
-    security: [{ x402: [] }],
-    parameters: [
-      { name: "q", in: "query", required: true, description: "token name or symbol to search (1-64 chars)", schema: { type: "string" } },
-      { name: "limit", in: "query", required: false, description: "max results 1-25", schema: { type: "number" } },
+  paths: { "/audit": paidOp("post", "Audit a crypto-bot source file for fake-earnings bug patterns (paid via x402)", PRICE, {
+    body: OBJ("One source file to scan", { code: { type: "string", description: "one JS/TS file, UTF-8" }, filename: { type: "string", description: "optional display name" } }, ["code"]),
+  }, OBJ("Static-analysis findings", {
+    scannedBytes: { type: "integer" }, signalCount: { type: "integer" },
+    findings: { type: "array", items: OBJ("one signal", { rule: { type: "string" }, file: { type: "string" }, line: { type: "integer" }, severity: { type: "string" }, detail: { type: "string" } }) },
+    disclaimer: { type: "string" },
+  }, ["signalCount", "findings"])), "/price": paidOp("get", "Live DEX token spot price + liquidity by contract address, EVM or Solana (paid via x402)", PRICE_DATA, {
+    params: [["address", true, "Token contract address: EVM (0x…, 42 hex) or Solana base58 mint (32-44 chars)", "string"]],
+  }, OBJ("Highest-liquidity pair quote", {
+    address: { type: "string" }, priceUsd: { type: "string", description: "spot price in USD as a decimal string" },
+    liquidityUsd: { type: "number" }, fdv: { type: "number" }, marketCap: { type: "number" }, volume24h: { type: "number" }, source: { type: "string" },
+  }, ["priceUsd"])), "/search_tokens": paidOp("get", "Search crypto tokens by name/symbol; returns highest-liquidity matched pairs (paid via x402)", PRICE_DATA, {
+    params: [
+      ["q", true, "token name or symbol to search (1-64 chars)", "string"],
+      ["limit", false, "max results 1-25", "number"],
     ],
-    responses: { 200: { description: "results[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
-  } }, ...Object.fromEntries(Object.entries(DATA_ROUTE_SPEC).map(([p, s]) => [p, { get: {
-    summary: s.summary,
-    "x-payment-info": { protocols: ["x402"], price: { mode: "fixed", currency: "USD", amount: PRICE_DATA.slice(1) } },
-    security: [{ x402: [] }],
-    parameters: s.params.map(([name, required, description, type]) => ({ name, in: "query", required, description, schema: { type } })),
-    responses: { 200: { description: "rows[] after settlement" }, 402: { description: "Payment required (x402 challenge)" } },
-  } }])), },
+  }, ROWS("Matched token pairs", "results")), ...Object.fromEntries(Object.entries(DATA_ROUTE_SPEC).map(([p, s]) => [p, paidOp(
+    "get", s.summary, PRICE_DATA, { params: s.params },
+    p === "/markets" ? ROWS("Top coins by market cap", "rows") : OBJ("Market-data snapshot rows, source and caveat", { ts: { type: "string", format: "date-time" }, caveat: { type: "string" } }),
+  )])), "/mcp": { post: {
+    summary: "MCP Streamable-HTTP endpoint (handshake and tools/list free; paid tools/call metered in-session)",
+    security: [],
+    responses: { 200: { description: "JSON-RPC response over server-sent events.", content: { "application/json": { schema: OBJ("JSON-RPC result") } } } },
+  } }, ...Object.fromEntries([
+    ["/", "Service card: name, endpoints, price and payout address"],
+    ["/health", "Liveness plus payment info"],
+    ["/llms.txt", "Plain-text agent briefing"],
+    ["/openapi.json", "This document"],
+    ["/robots.txt", "Crawler conventions, pointing at llms.txt"],
+    ["/discovery/resources", "Fan-out list of every payable route with its challenge"],
+    ["/.well-known/x402-info", "x402 merchant metadata"],
+    ["/.well-known/x402", "x402 resource index with ownership proof"],
+  ].map(([p, d]) => [p, { get: freeOp(d) }])), },
 }));
 app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "# crypto-bot-honesty-audit", "",
