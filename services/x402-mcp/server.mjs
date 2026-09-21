@@ -59,11 +59,11 @@ const FREE_TOOLS = new Set(["demo_audit"]);
 const PAID_DATA_PATHS = new Set(["/price", "/search_tokens", "/markets", "/tvl", "/stablecoins", "/trending", "/gas"]);
 // Table used to emit the OpenAPI paths for the data routes.
 const DATA_ROUTE_SPEC = {
-  "/markets": { summary: "Top coins by market cap: price, market cap, volume, 1h/24h/7d change (paid via x402)", params: [["vs", false, "quote currency: usd, eur, gbp, jpy, btc, eth", "string"], ["limit", false, "rows 1-100 (default 25)", "number"]] },
-  "/tvl": { summary: "DeFi value-locked ranking per chain in USD (paid via x402)", params: [["limit", false, "rows 1-100 (default 25)", "number"]] },
-  "/stablecoins": { summary: "USD-pegged stablecoin supply by asset, peg mechanism and chain count (paid via x402)", params: [["limit", false, "rows 1-100 (default 20)", "number"]] },
-  "/trending": { summary: "Currently promoted DEX tokens enriched with live price, liquidity and 24h volume (paid via x402)", params: [["limit", false, "rows 1-50 (default 10)", "number"], ["chain", false, "optional chainId filter, e.g. base or solana", "string"]] },
-  "/gas": { summary: "Live gas and base fee in gwei for Base and Arbitrum from public RPC (paid via x402)", params: [["chains", false, "comma list from: base, arbitrum", "string"]] },
+  "/markets": { summary: "Top coins by market cap: price, market cap, volume, 1h/24h/7d change (paid via x402)", params: [["vs", false, "quote currency: usd, eur, gbp, jpy, btc, eth", "string", "usd"], ["limit", false, "rows 1-100 (default 25)", "number", 25]] },
+  "/tvl": { summary: "DeFi value-locked ranking per chain in USD (paid via x402)", params: [["limit", false, "rows 1-100 (default 25)", "number", 25]] },
+  "/stablecoins": { summary: "USD-pegged stablecoin supply by asset, peg mechanism and chain count (paid via x402)", params: [["limit", false, "rows 1-100 (default 20)", "number", 20]] },
+  "/trending": { summary: "Currently promoted DEX tokens enriched with live price, liquidity and 24h volume (paid via x402)", params: [["limit", false, "rows 1-50 (default 10)", "number", 10], ["chain", false, "optional chainId filter, e.g. base or solana", "string", "base"]] },
+  "/gas": { summary: "Live gas and base fee in gwei for Base and Arbitrum from public RPC (paid via x402)", params: [["chains", false, "comma list from: base, arbitrum", "string", "base,arbitrum"]] },
 };
 
 // ---- MCP server ----
@@ -687,8 +687,8 @@ const paidOp = (verb, summary, amount, input, output) => ({ [verb]: {
   summary,
   "x-payment-info": xpi(amount),
   security: [{ x402: [] }],
-  ...(input.body ? { requestBody: { required: true, content: { "application/json": { schema: input.body } } } } : {}),
-  ...(input.params ? { parameters: input.params.map(([name, required, description, type]) => ({ name, in: "query", required, description, schema: { type } })) } : {}),
+  ...(input.body ? { requestBody: { required: true, content: { "application/json": { schema: input.body, ...(input.example ? { example: input.example } : {}) } } } } : {}),
+  ...(input.params ? { parameters: input.params.map(([name, required, description, type, example]) => ({ name, in: "query", required, description, schema: { type }, ...(example === undefined ? {} : { example }) })) } : {}),
   responses: {
     200: { description: "Payload, served only after settlement.", content: { "application/json": { schema: output } } },
     402: { description: "Payment required — x402 terms on the PAYMENT-REQUIRED header.", content: { "application/json": { schema: OBJ("payment requirements", { error: { type: "string" }, maxAmountRequired: { type: "string" } }) } } },
@@ -710,19 +710,20 @@ app.get("/openapi.json", (_req, res) => res.json({
   components: { securitySchemes: { x402: { type: "apiKey", in: "header", name: "PAYMENT-SIGNATURE", description: `x402 v2 USDC payment on ${NETWORK} or ${SOLANA_NETWORK}; the 402 challenge on the PAYMENT-REQUIRED header lists both accepts. Settle one, then resend with the payment in PAYMENT-SIGNATURE. (X-PAYMENT is the retired v1 header name and is NOT read here.)` } } },
   paths: { "/audit": paidOp("post", "Audit a crypto-bot source file for fake-earnings bug patterns (paid via x402)", PRICE, {
     body: OBJ("One source file to scan", { code: { type: "string", description: "one JS/TS file, UTF-8" }, filename: { type: "string", description: "optional display name" } }, ["code"]),
+    example: { code: 'const provider = new ethers.JsonRpcProvider("https://eth-sepolia.g.alchemy.com/v2/KEY");\nstate.earnings.total_usd += amount;', filename: "bot.js" },
   }, OBJ("Static-analysis findings", {
     scannedBytes: { type: "integer" }, signalCount: { type: "integer" },
     findings: { type: "array", items: OBJ("one signal", { rule: { type: "string" }, file: { type: "string" }, line: { type: "integer" }, severity: { type: "string" }, detail: { type: "string" } }) },
     disclaimer: { type: "string" },
   }, ["signalCount", "findings"])), "/price": paidOp("get", "Live DEX token spot price + liquidity by contract address, EVM or Solana (paid via x402)", PRICE_DATA, {
-    params: [["address", true, "Token contract address: EVM (0x…, 42 hex) or Solana base58 mint (32-44 chars)", "string"]],
+    params: [["address", true, "Token contract address: EVM (0x…, 42 hex) or Solana base58 mint (32-44 chars)", "string", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"]],
   }, OBJ("Highest-liquidity pair quote", {
     address: { type: "string" }, priceUsd: { type: "string", description: "spot price in USD as a decimal string" },
     liquidityUsd: { type: "number" }, fdv: { type: "number" }, marketCap: { type: "number" }, volume24h: { type: "number" }, source: { type: "string" },
   }, ["priceUsd"])), "/search_tokens": paidOp("get", "Search crypto tokens by name/symbol; returns highest-liquidity matched pairs (paid via x402)", PRICE_DATA, {
     params: [
-      ["q", true, "token name or symbol to search (1-64 chars)", "string"],
-      ["limit", false, "max results 1-25", "number"],
+      ["q", true, "token name or symbol to search (1-64 chars)", "string", "pepe"],
+      ["limit", false, "max results 1-25", "number", 12],
     ],
   }, ROWS("Matched token pairs", "results")), ...Object.fromEntries(Object.entries(DATA_ROUTE_SPEC).map(([p, s]) => [p, paidOp(
     "get", s.summary, PRICE_DATA, { params: s.params },
