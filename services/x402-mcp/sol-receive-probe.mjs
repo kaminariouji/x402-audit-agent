@@ -39,9 +39,13 @@ const [kitAta] = await findAssociatedTokenPda({ mint: address(USDC), owner: addr
 console.log("expected destination ATA (kit):", kitAta);
 
 const bal = await rpc("getBalance", [payTo]);
-console.log(`payTo lamports: ${bal.value} (rent for one ATA = 2039280 lamports = 0.00203928 SOL)`);
+const rentMin = await rpc("getMinimumBalanceForRentExemption", [165]);
+console.log(`payTo lamports: ${bal.value}  | measured rent-exempt minimum for a 165-byte token account: ${rentMin} lamports`);
 
+// Reading this output correctly (2026-09-23): a missing ATA is NOT a capital blocker for us. Measured on
+// two live Solana x402 settlements (.tmp-check/sol-ata-creation-tx.mjs) the PAYER's transaction contained
+// spl-associated-token-account create + transferChecked, source = payer, so the rent was funded by the
+// buyer and the seller signed nothing. It only means buyers on the create-less reference client fail.
 console.log(hasAta
-  ? "\n=> OK: the Solana destination account exists; the rail can settle once a buyer pays."
-  : `\n=> BLOCKER: our Solana payTo has no USDC token account and ${bal.value} lamports, so every buyer's x402 Solana payment dies at transferChecked index 2. This is OUR account, not the facilitator: fixing it costs 0.00203928 SOL of one-time ATA rent, which zero-capital cannot pay. Until then the SVM acceptance must not lead accepts[0].`);
-process.exit(hasAta ? 0 : 1);
+  ? "\n=> ATA exists: every SVM buyer can settle, including the reference @x402/svm client."
+  : `\n=> No ATA yet. Costs us $0 (payers can create it inside their own settlement tx — measured). Consequence: a buyer using @x402/svm's ExactSvmScheme, which never issues createAssociatedTokenAccountIdempotent, will fail simulation against ${kitAta} until the first create-capable payment lands.`);
