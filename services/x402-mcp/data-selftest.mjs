@@ -123,7 +123,7 @@ check("GET /mcp -> 405 with Allow: POST", mcpGet.status === 405 && mcpGet.header
 const disc = await fetch(base + "/discovery/resources");
 const dj = await disc.json().catch(() => ({}));
 check("GET /discovery/resources -> 200 free", disc.status === 200, disc.status);
-check("fan-out lists every paid route", dj.items?.length === 9, `${dj.items?.length}`);
+check("fan-out lists every paid route", dj.items?.length === 10, `${dj.items?.length}`); // 8 data/audit + /a2a + /mcp
 check("fan-out resources are absolute URLs", dj.resources?.every((r) => /^https:\/\//.test(r)), JSON.stringify(dj.resources?.slice(0, 2)));
 check("fan-out items each offer both networks", dj.items?.every((i) => i.accepts?.length === 2), "some items are single-network");
 check("fan-out audit is priced, market data separately", dj.items?.find((i) => i.resource?.endsWith("/audit"))?.accepts?.[0]?.price === "$0.01", dj.items?.[0]?.accepts?.[0]?.price);
@@ -268,7 +268,7 @@ const wk = await (await fetch(base + "/.well-known/x402")).json();
 check("x402 fan-out keeps resources as absolute URL strings", Array.isArray(wk.resources) && wk.resources.length === 8
   && wk.resources.every((u) => /^https?:\/\/[^/]+\/[a-z_]+$/.test(u)), JSON.stringify(wk.resources?.slice(0, 2)));
 check("x402 fan-out still proves ownership of the payout address", (wk.ownershipProofs || []).includes("0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b"), JSON.stringify(wk.ownershipProofs));
-check("x402 fan-out prices every payable route in atomic units", Array.isArray(wk.payments) && wk.payments.length === 9
+check("x402 fan-out prices every payable route in atomic units", Array.isArray(wk.payments) && wk.payments.length === 10
   && wk.payments.every((p) => /^\d+$/.test(String(p.priceAtomic)) && String(p.priceAtomic) === String(p.accepts?.[0]?.amount)),
   JSON.stringify((wk.payments || []).map((p) => `${p.method} ${p.url?.split("/").pop()}=${p.priceAtomic}`)));
 check("x402 fan-out names asset + payTo + network per offer", wk.payments?.every((p) => p.accepts?.every((a) =>
@@ -302,14 +302,16 @@ const snippet = (llms.match(/```js\n([\s\S]*?)```/) || [, ""])[1];
 check("llms.txt ships a javascript recipe", snippet.includes("createPaymentPayload") && snippet.includes("encodePaymentSignatureHeader"), snippet.slice(0, 60));
 // The recipe must point at the network named by accepts[0] (see the ordering check above).
 check("llms.txt recipe defaults to the Base acceptance", /@x402\/evm\/exact\/client/.test(snippet) && /accepts\[0\]/.test(snippet) && !/ExactSvmScheme/.test(snippet), snippet.slice(0, 80));
-// Buyer-facing copy may not promise a rail we know is dead: our Solana payTo has no funded USDC ATA,
-// so llms.txt has to say so instead of implying a funded buyer settles there.
+// Buyer-facing copy may not promise a rail we know is dead, and may not DISCOURAGE a rail that works.
 // Regression guard for a real published lie: we once told buyers that payai rejects every EIP-3009
 // signature on Base. It does not — that reading came from reusing the anvil test key, which payai
 // denylists (evm-key-ab.mjs). Never let the discouraged-buyer wording come back.
 check("llms.txt does not tell buyers our Base rail is broken", !/refuses every EIP-3009|may 402 you on a correct payment/.test(llms), "stale refusal claim republished");
 check("llms.txt states Base verifies and only balance fails", /invalid_exact_evm_insufficient_balance/.test(llms) && /verifies a correctly-signed/.test(llms), "missing the measured verify result");
-check("llms.txt discloses the unfunded Solana ATA", /0\.00203928 SOL/.test(llms) && /ATA/.test(llms) && /rent/.test(llms), "ATA rent not disclosed");
+// Retracted: "our Solana payTo cannot be paid until WE fund its ATA" was wrong. Measured on two live
+// settlements (sol-ata-creation-tx.mjs) the payer creates + rents the destination account in its own tx.
+check("llms.txt does not republish the self-funding Solana ATA blocker", !/do not spend a signature|rent is paid/.test(llms) && !/until its 0\.00203928 SOL/.test(llms), "stale unfunded-ATA warning back");
+check("llms.txt discloses who pays Solana rent and the real client caveat", /createAssociatedTokenAccountIdempotent/.test(llms) && /1488440/.test(llms), "missing the measured rent-payer result");
 check("llms.txt keeps the Base domain-separator proof", /DOMAIN_SEPARATOR/.test(llms) && /TransferWithAuthorization/.test(llms), "lost the EIP-712 detail");
 const snippetFile = join(tmpdir(), `published-buyer-snippet-${process.pid}.mjs`);
 writeFileSync(snippetFile, snippet.replace("process.env.BUYER_PRIVATE_KEY", '"0x" + "1".repeat(64)'));
