@@ -12,10 +12,12 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { ExactSvmScheme } from "@x402/svm/exact/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { z } from "zod";
+import { handleA2ARequest, handleA2AX402Request, a2aX402ExtensionRequested, X402_A2A_EXT_URI } from "./a2a.mjs";
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { scanText } = require(path.join(__dirname, "audit-bot-honesty.cjs"));
+const { scanText, RULES } = require(path.join(__dirname, "audit-bot-honesty.cjs"));
+const SEVERITY_BY_RULE = new Map(RULES.map((r) => [r.id, r.severity]));
 
 // Receiving wallet (public address only; safe to embed). Override with X402_PAY_TO.
 const PAY_TO = process.env.X402_PAY_TO || "0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b";
@@ -42,11 +44,18 @@ const PAY_TO_SOLANA = process.env.X402_PAY_TO_SOLANA || "5NWSPyJChL2NJf3oEr6Mh4v
 //             (invalid_exact_evm_insufficient_balance) for 3/3 fresh zero-balance keys. An earlier
 //             "payai refuses all EVM" reading was a confound: every probe had reused the well-known
 //             anvil test key 0x70997970…, which payai rejects as invalid_exact_evm_signature.
-//   Solana -> UNUSABLE ON OUR SIDE. The client derives destinationATA = findAssociatedTokenPda(payTo)
-//             and never creates it (@x402/svm/dist/esm/chunk-FKOM6YTW.mjs:74-90), and our payTo has no
-//             USDC token account and 0 lamports (sol-receive-probe.mjs), so every buyer's transferChecked
-//             dies at account index 2 in simulation until its 0.00203928 SOL rent is paid.
-// So Base leads: it is the only rail a funded buyer can settle on today, keyless.
+//   Solana -> RECEIVING COSTS US $0, BUT ONLY SOME BUYERS CAN PAY US. Measured two live Solana x402
+//             settlements (.tmp-check/sol-ata-creation-tx.mjs): the PAYER's transaction carried
+//             spl-associated-token-account `create` + transferChecked in one tx, with `source` = the
+//             payer, so the seller's ATA rent (getMinimumBalanceForRentExemption(165) = 1488440
+//             lamports, not the 2039280 we had quoted) was paid by the buyer and our wallet paid
+//             nothing. So "fund the ATA first" was never a zero-capital blocker and is retracted.
+//             What IS true: the reference client derives both ATAs and appends only
+//             [transferChecked, memo] (@x402/svm/dist/cjs/index.js:541-593 — no create instruction),
+//             so a buyer on that client fails against an account that
+//             does not exist yet. Our payTo has 0 token accounts, so until a create-capable buyer
+//             pays us, only create-capable clients can settle here.
+// So Base leads: it is the rail every buyer can settle on today, keyless.
 const acceptsFor = (price) => ([
   { scheme: "exact", price, network: NETWORK, payTo: PAY_TO },
   { scheme: "exact", price, network: SOLANA_NETWORK, payTo: PAY_TO_SOLANA },
@@ -62,7 +71,7 @@ const PAYMENT_INFO = {
   // Mirrors acceptsFor: Base first, because that is the network a default client should try.
   networks: [
     { network: NETWORK, label: "Base mainnet", asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", payTo: PAY_TO, prices: { audit: PRICE, data: PRICE_DATA } },
-    { network: SOLANA_NETWORK, label: "Solana mainnet", asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", payTo: PAY_TO_SOLANA, prices: { audit: PRICE, data: PRICE_DATA }, note: "facilitator is feePayer; receiving costs the seller $0, but this payTo has no USDC token account yet, so payments here fail until its 0.00203928 SOL ATA rent is funded" },
+    { network: SOLANA_NETWORK, label: "Solana mainnet", asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", payTo: PAY_TO_SOLANA, prices: { audit: PRICE, data: PRICE_DATA }, note: "the facilitator is feePayer and the payer creates + rents the destination token account inside its own tx (measured, .tmp-check/sol-ata-creation-tx.mjs), so receiving costs this wallet $0; use a client that appends createAssociatedTokenAccountIdempotent, because the reference @x402/svm client does not and our payTo has no USDC account yet" },
   ],
 };
 
@@ -389,6 +398,25 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
       }),
     },
   },
+  "POST /a2a": {
+    accepts: acceptsFor(PRICE),
+    serviceName: SERVICE_NAME,
+    iconUrl: ICON_URL,
+    // A2A buyers resolve /.well-known/agent.json first and then POST message/send to `url`.
+    // The card advertises one skill per priced route, so this challenge must be the audit
+    // price and must say which skill it unlocks.
+    description: `Per-call x402 payment for an A2A message/send task on this agent (${PRICE} for the audit_bot_code skill; see /.well-known/agent.json).`,
+    tags: ["a2a", "agent-card", "audit", "security", "agents"],
+    mimeType: "application/json",
+    extensions: {
+      ...declareDiscoveryExtension({
+        method: "POST", bodyType: "json",
+        input: { jsonrpc: "2.0", id: 1, method: "message/send", params: { message: { role: "user", parts: [{ kind: "data", data: { code: "state.earnings.total_usd += amount;" } }] } } },
+        inputSchema: { type: "object", properties: { method: { type: "string" }, params: { type: "object" } }, required: ["method"] },
+        output: { example: { result: { kind: "task", status: { state: "completed" }, artifacts: [{ parts: [{ data: { signalCount: 1 } }] }] } } },
+      }),
+    },
+  },
   "POST /audit": {
     accepts: acceptsFor(PRICE),
     serviceName: SERVICE_NAME,
@@ -523,6 +551,13 @@ httpServer.requiresPayment = function (context) {
   const method = context.method || context.adapter?.getMethod?.();
   const path = context.path;
   if (method === "POST" && path === "/audit") return true;
+  // /a2a is gated twice on purpose. A plain x402 buyer gets the HTTP 402 challenge from the gate
+  // below. A buyer that activates the A2A x402 extension cannot read an HTTP status — it wants an
+  // A2A task in `input-required` — so the gate stands down for that header and the /a2a handler
+  // enforces the same money itself through the same facilitator (verify, then settle, then scan).
+  if (method === "POST" && path === "/a2a") {
+    return !a2aX402ExtensionRequested({ "x-a2a-extensions": context.adapter?.getHeader?.("x-a2a-extensions") });
+  }
   if (method === "GET" && PAID_DATA_PATHS.has(path)) return true;
   if (method === "POST" && path === "/mcp") {
     const body = context.adapter?.getBody?.() || {};
@@ -547,10 +582,16 @@ app.use((err, req, res, next) => {
 });
 
 // Access log: without it we cannot tell a crawler from a payer. 2xx on a paid route = money moved.
+// `pay=` records whether a payment was PRESENTED, separately from whether we accepted it: without it
+// a buyer whose payment we rejected and a crawler that never intended to pay are the same log line,
+// and "nobody ever tried to pay" stops being a claim anyone can check.
 app.use((req, res, next) => {
   res.on("finish", () => {
     const q = req.originalUrl.length > 120 ? req.originalUrl.slice(0, 120) + "…" : req.originalUrl;
-    console.log(`[${new Date().toISOString()}] ${res.statusCode} ${req.method} ${q} ua=${(req.get("user-agent") || "-").slice(0, 60)}`);
+    const presented = req.get("payment-signature") ? "v2" : req.get("x-payment") ? "v1" : "-";
+    console.log(
+      `[${new Date().toISOString()}] ${res.statusCode} ${req.method} ${q} ua=${(req.get("user-agent") || "-").slice(0, 60)} pay=${presented}`,
+    );
   });
   next();
 });
@@ -634,8 +675,22 @@ const PAYABLE_ROUTES = [
   { path: "/price", method: "GET", price: PRICE_DATA, description: "Live DEX spot price, liquidity, FDV and volume for one token by contract address (EVM 0x.. or Solana base58 mint)." },
   { path: "/search_tokens", method: "GET", price: PRICE_DATA, description: "Token search by name/symbol; highest-liquidity matching pairs." },
   ...Object.entries(DATA_ROUTE_SPEC).map(([p, s]) => ({ path: p, method: "GET", price: PRICE_DATA, description: s.summary })),
+  { path: "/a2a", method: "POST", price: PRICE, description: "A2A JSON-RPC endpoint (message/send). Send source in a text or data part and get back findings[] with line numbers." },
   { path: "/mcp", method: "POST", price: PRICE, description: "MCP Streamable-HTTP server (POST only). Paid tools/call: audit_bot_code and the market-data tools." },
 ];
+// A2A agent card: buyers that speak agent-to-agent resolve this BEFORE they can eat a 402,
+// so every skill here is a route that actually exists, at the price actually charged.
+const A2A_SKILLS = PAYABLE_ROUTES
+  .filter((r) => r.path !== "/mcp" && r.path !== "/a2a")
+  .map((r) => ({
+    id: r.path.slice(1),
+    name: `${r.method} ${r.path}`,
+    description: `${r.description} Costs ${r.price} USDC per call over x402.`,
+    tags: r.tags ?? ["crypto", "audit", "market-data", "agents", "x402"],
+    inputModes: [r.method === "POST" ? "application/json" : "text/plain"],
+    outputModes: ["application/json"],
+    examples: [r.method === "POST" ? `POST ${PUBLIC_URL}${r.path} with {"code":"<one JS/TS file>"} (or an A2A message/send to ${PUBLIC_URL}/a2a)` : `GET ${PUBLIC_URL}${r.path}`],
+  }));
 app.get("/discovery/resources", (_req, res) => res.json({
   version: 1,
   server: "io.github.kaminariouji/x402-audit-agent",
@@ -697,6 +752,47 @@ app.get("/.well-known/api-catalog", (_req, res) => {
 });
 // Deliberately permissive: every route is public (payment is enforced per-request, not by
 // crawling policy), and the LLMs field points agents at the machine-readable service terms.
+// A2A agent card, at both path spellings the ecosystem actually requests (0.2 used
+// agent.json, 0.3 uses agent-card.json; indexers ask for one or the other and a 404
+// reads as "no A2A agent here"). Free, because it is what a buyer reads to decide.
+app.get(["/.well-known/agent.json", "/.well-known/agent-card.json"], (_req, res) => {
+  res.json({
+    protocolVersion: "0.3.0",
+    name: SERVICE_NAME,
+    description:
+      "Pay-per-call agent: scans a JS/TS crypto-bot source file for the bug patterns that make it report income it never earned, plus market-data routes (token price, search, market cap, TVL, stablecoins, trending, gas). No account and no API key — payment is x402 (HTTP 402) in USDC.",
+    version: "1.0.0",
+    // @a2a-js/sdk's legacy path copies preferredTransport straight into protocolBinding, whose
+    // core enum is JSONRPC/GRPC/HTTP+JSON — the natural-looking "JSON-RPC" made every v1.x client
+    // fail to select our interface. supportedInterfaces is the current (1.0) shape; url stays for
+    // 0.2/0.3 readers, and a card that carries both parses on either path.
+    url: `${PUBLIC_URL}/a2a`,
+    preferredTransport: "JSONRPC",
+    supportedInterfaces: [
+      { url: `${PUBLIC_URL}/a2a`, protocolBinding: "JSONRPC", protocolVersion: "1.0", tenant: "" },
+    ],
+    iconUrl: ICON_URL,
+    documentationUrl: "https://github.com/kaminariouji/x402-audit-agent",
+    provider: { organization: "kaminariouji", url: "https://github.com/kaminariouji" },
+    // required:true + the URI below is how the A2A x402 extension client (google-agentic-commerce/
+    // a2a-x402) decides this agent takes payment at the task layer; see a2a.mjs handleA2AX402Request.
+    capabilities: {
+      streaming: false, pushNotifications: false, stateTransitionHistory: false,
+      extensions: [{ uri: X402_A2A_EXT_URI, description: "Supports payments using the x402 protocol.", required: true }],
+    },
+    defaultInputModes: ["application/json", "text/plain"],
+    defaultOutputModes: ["application/json"],
+    skills: A2A_SKILLS,
+    // Not an A2A-standard field: the payment terms an x402 client needs to build the
+    // authorization without first eating a 402.
+    x402: {
+      protocol: "x402 (HTTP 402)", currency: "USDC", prices: { audit: PRICE, market_data: PRICE_DATA },
+      networks: OFFERED_NETS.map((n) => n.network), payTo: PAY_TO,
+      resourceIndex: `${PUBLIC_URL}/.well-known/x402`, info: `${PUBLIC_URL}/.well-known/x402-info`,
+      note: "POST /a2a settles the audit skill; the market-data skills are priced GET routes, called directly with a payment.",
+    },
+  });
+});
 app.get("/robots.txt", (_req, res) => res.type("text/plain").send([
   "User-agent: *", "Allow: /", "", `LLMs: ${PUBLIC_URL}/llms.txt`,
   `Sitemap hint: ${PUBLIC_URL}/.well-known/x402-info`,
@@ -815,7 +911,7 @@ app.get("/llms.txt", (_req, res) => res.type("text/plain").send([
   "Send the request unpaid first. We answer HTTP 402 with base64 JSON terms on the `payment-required` response header. Build a payment for ONE of the two `accepts[]` entries, then resend with it in the `PAYMENT-SIGNATURE` request header.", "",
   "Legacy v1 buyers are served too, with no extra work: the same 402 carries a v1-shaped JSON body (`x402Version:1`, short network name `base`, `maxAmountRequired`, `asset`, `resource`) that `x402-fetch` / `x402-axios` 1.x parse directly, you reply in `X-PAYMENT`, and the receipt comes back in `X-PAYMENT-RESPONSE`. Verified against the shipped Coinbase client, not just our own envelope.", "",
   "**Pay on Base (`" + NETWORK + "`, USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913).** It is `accepts[0]` because it is the rail that works: measured against our own published acceptance, the facilitator we run (`facilitator.payai.network`) verifies a correctly-signed EIP-712 `TransferWithAuthorization` and only then reports the signer's balance — 3/3 fresh zero-balance keys reached `invalid_exact_evm_insufficient_balance`, which means the payment itself was accepted. No signup, no API key, receiving costs the seller nothing, and your funds only move on a successful settle.", "",
-  "**Solana (`" + SOLANA_NETWORK + "`, mint `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) is `accepts[1]`, and it is currently unusable on OUR side — please do not spend a signature on it.** `ExactSvmScheme` transfers straight into the ATA it derives for our `payTo`, and that account has never had its one-time 0.00203928 SOL rent paid (our `payTo` holds 0 lamports and 0 token accounts), so the transfer fails in on-chain simulation for every buyer. This file and `/.well-known/x402-info` are updated the moment it is funded.", "",
+  "**Solana (`" + SOLANA_NETWORK + "`, mint `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) is `accepts[1]`, and it costs this wallet $0 to receive on — the earlier \"unfunded ATA\" warning here was wrong and is retracted.** Measured on two live Solana x402 settlements: the PAYER's own transaction carried `spl-associated-token-account create` plus `transferChecked`, so the buyer funded our token account (rent-exempt minimum for 165 bytes is 1488440 lamports, not the 2039280 previously quoted) and we signed nothing. One caveat that IS real: the reference `@x402/svm` client sends `transferChecked` only and never creates a destination account, so until our ATA exists, pay us from a client that appends `createAssociatedTokenAccountIdempotent` (or just use Base, `accepts[0]`).", "",
   "**Both wire versions are accepted, on Base.** Preferred is v2: put the payment in the `PAYMENT-SIGNATURE` header. Legacy v1 (`x402-fetch`, and what the Glimind router tells agents to do) also works: send the base64 v1 envelope in `X-PAYMENT` and this origin maps it onto the acceptance WE publish for the route being called, then runs the identical SDK verification and settlement — the EIP-712 `TransferWithAuthorization` a v1 client signs is byte-for-byte the one a v2 client signs, so nothing is trusted from the caller. A v1 payment for another wallet, another amount or another route is left alone and gets the normal 402.", "",
   "```js",
   "// npm i @x402/core@2 @x402/evm@2 viem   (Base USDC is accepts[0]; the path that can settle)",
@@ -980,6 +1076,67 @@ app.post("/audit", (req, res) => {
     disclaimer: "Static-analysis signals; each must be confirmed by reading the cited line. Not a guarantee of correctness or profitability." });
 });
 // Paid market-data route: live DEX spot price for a Base token (only reached after settlement).
+// A2A JSON-RPC. The card advertises this path as `url`, so an A2A buyer lands here after
+// settling the x402 payment. Everything about which method name and part shape a buyer
+// sends is decided by their library, not by us, so the wire handling lives in a2a.mjs and
+// is checked against @a2a-js/sdk itself (a2a-contract-check.mjs) rather than assumed;
+// anything it does not understand is answered as a JSON-RPC error, never as free work.
+const runA2AAudit = (code, filename) => {
+  const hits = scanText(code, filename);
+  const findings = hits.map((h) => ({
+    ruleId: h.rule,
+    severity: SEVERITY_BY_RULE.get(h.rule) || "info",
+    file: h.file,
+    line: h.line,
+    evidence: String(h.text || "").slice(0, 400),
+    ...(h.note ? { note: h.note } : {}),
+  }));
+  return { findings, high: findings.filter((f) => f.severity === "high").length };
+};
+// The extension buyer's payment never touches a header, so the v1->v2 normalization the
+// X-PAYMENT bridge does in middleware has to happen here instead — against OUR published
+// acceptance for this exact route, never against anything the buyer claims to have paid.
+async function payForA2ATask(v1Payload) {
+  const terms = await publishedBaseAcceptance({ method: "POST", path: "/a2a" });
+  if (!terms) return { ok: false, error: "facilitator_unavailable" };
+  const authorization = v1Payload?.payload?.authorization ?? v1Payload?.authorization;
+  const signature = v1Payload?.payload?.signature ?? v1Payload?.signature;
+  if (!authorization || !signature) return { ok: false, error: "missing_payment_data" };
+  if (String(authorization.to).toLowerCase() !== String(terms.payTo).toLowerCase()) return { ok: false, error: "invalid_exact_evm_recipient" };
+  if (BigInt(String(authorization.value)) !== BigInt(String(terms.amount))) return { ok: false, error: "invalid_exact_evm_amount" };
+  const payment = { x402Version: 2, payload: { authorization, signature }, accepted: terms };
+  try {
+    const verified = await resourceServer.verifyPayment(payment, terms);
+    if (!verified?.isValid) return { ok: false, error: String(verified?.invalidReason ?? "payment_invalid") };
+    const settled = await resourceServer.settlePayment(payment, terms);
+    if (!settled?.success) return { ok: false, error: String(settled?.errorReason ?? "settlement_failed") };
+    console.log(`[a2a-x402] SETTLED ${terms.amount} atomic from ${verified.payer ?? authorization.from} tx=${settled.transaction ?? "-"}`);
+    return {
+      ok: true,
+      receipt: {
+        success: true, network: settled.network ?? NETWORK, transaction: settled.transaction ?? null,
+        payer: settled.payer ?? verified.payer ?? authorization.from, amount: terms.amount,
+      },
+    };
+  } catch (e) {
+    return { ok: false, error: String(e?.shortMessage ?? e?.message ?? e).slice(0, 160) };
+  }
+}
+app.post("/a2a", async (req, res) => {
+  if (!a2aX402ExtensionRequested(req.headers)) return res.json(handleA2ARequest(req.body, runA2AAudit));
+  res.set("X-A2A-Extensions", X402_A2A_EXT_URI);
+  const terms = await publishedBaseAcceptance({ method: "POST", path: "/a2a" });
+  if (!terms) return res.status(503).json({ jsonrpc: "2.0", id: req.body?.id ?? null, error: { code: -32000, message: "payment terms are unavailable right now, so nothing can be sold" } });
+  res.json(await handleA2AX402Request(req.body, {
+    runAudit: runA2AAudit,
+    pay: payForA2ATask,
+    paymentRequired: () => ({
+      x402Version: 1,
+      accepts: [toV1Accept(terms, { method: "POST", path: "/a2a" })].filter(Boolean),
+      error: `Payment required: ${PRICE} USDC on Base to run one honesty scan over the source in this task.`,
+    }),
+  }));
+});
 app.get("/price", async (req, res) => {
   const address = String(req.query.address || "").trim();
   if (!isTokenAddress(address)) return res.status(400).json({ error: "query ?address= must be an EVM contract (0x + 42 hex) or a Solana base58 mint" });
