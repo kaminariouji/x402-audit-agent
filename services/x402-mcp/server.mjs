@@ -982,14 +982,27 @@ app.use((req, res, next) => {
   res.json = (body) => {
     try {
       if (res.statusCode === 402) {
-        let v2 = Array.isArray(body?.accepts) ? body : null;
         // Some SDK paths only set the base64 header; decode it rather than invent terms.
-        if (!v2) {
-          const raw = res.getHeader("payment-required") ?? res.getHeader("x-payment-required");
-          if (typeof raw === "string" && raw) v2 = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+        const raw = res.getHeader("payment-required") ?? res.getHeader("x-payment-required");
+        let fromHeader = null;
+        if (typeof raw === "string" && raw) {
+          try { fromHeader = JSON.parse(Buffer.from(raw, "base64").toString("utf8")); } catch { /* fall through to the SDK body */ }
         }
+        const v2 = Array.isArray(body?.accepts) ? body : fromHeader;
         const accepts = (v2?.accepts ?? []).map((a) => toV1Accept(a, req)).filter(Boolean);
-        if (accepts.length) return json({ x402Version: 1, error: v2.error ?? "Payment required", accepts });
+        if (accepts.length) {
+          // Bazaar indexes THIS response body and skips a resource whose extensions block is missing,
+          // while the SDK's own extensions live on the v2 envelope. Carry them over verbatim (they are
+          // server-owned terms, never client input): x402-fetch reads only `accepts[]` and the v1 zod
+          // schemas are non-strict, so an extra top-level key is invisible to a legacy buyer.
+          const extensions = v2?.extensions ?? fromHeader?.extensions;
+          return json({
+            x402Version: 1,
+            error: v2.error ?? "Payment required",
+            accepts,
+            ...(extensions ? { extensions } : {}),
+          });
+        }
       }
     } catch {
       // Never let the legacy encoder swallow the challenge: fall through with the SDK's own body.
