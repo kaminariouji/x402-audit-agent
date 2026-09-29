@@ -9,3 +9,8 @@ credentials*
 node_modules/
 ngrok.yml
 .tmp-check/*.out
+
+# build artifacts of scripts/build-cloudflare-pages.mjs — regenerate, do not hand-edit
+cloudflare-pages/
+workers-mirror/public/
+*.zip

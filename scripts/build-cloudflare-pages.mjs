@@ -17,7 +17,11 @@ import fs from "node:fs";
 import path from "node:path";
 
 const arg = (n, d) => { const a = process.argv.find((x) => x.startsWith(`--${n}=`)); return a ? a.split("=").slice(1).join("=") : d; };
-const ORIGIN = arg("origin", "http://127.0.0.1:10000");
+// Two different things, and the first version of this file used one variable for both, so a mirror built
+// while the tunnel was down shipped `"origin": "http://127.0.0.1:10000"` and every endpoint link on the
+// public page pointed at this laptop. Where we READ from (the container, reachable locally even when the
+// edge is refusing) and what we ADVERTISE (the origin a buyer must actually call) are not the same value.
+const READ_FROM = arg("origin", "http://127.0.0.1:10000");
 const OUT = arg("out", "cloudflare-pages");
 
 async function get(u) {
@@ -28,9 +32,22 @@ async function get(u) {
   try { return JSON.parse(t); } catch { throw new Error(`${u} -> body is not JSON: ${t.slice(0, 80)}`); }
 }
 
-const terms = await get(`${ORIGIN}/.well-known/x402`);
-const disc = await get(`${ORIGIN}/discovery/resources`);
-const card = await get(`${ORIGIN}/.well-known/mcp/server-card.json`);
+const terms = await get(`${READ_FROM}/.well-known/x402`);
+// The advertised origin is derived from the service's own manifest — the absolute URL of the first listed
+// resource — never typed here and never taken from the read address. Loopback is a hard error: a public
+// discovery page that says "call 127.0.0.1" is worse than no page, because it looks like a live answer.
+function publicOriginOf(manifest) {
+  const first = (manifest.resources || [])[0];
+  let u = null;
+  try { u = new URL(String(first)); } catch { /* falls through to the error below */ }
+  if (!u || u.protocol !== "https:" || u.hostname === "127.0.0.1" || u.hostname === "localhost" || !u.pathname.startsWith("/")) {
+    throw new Error(`cannot derive a public https origin from the live manifest (first resource = ${JSON.stringify(first)}) — refusing to publish a mirror that points at a laptop`);
+  }
+  return u.origin;
+}
+const ORIGIN = publicOriginOf(terms);
+const disc = await get(`${READ_FROM}/discovery/resources`);
+const card = await get(`${READ_FROM}/.well-known/mcp/server-card.json`);
 
 const items = disc.items || [];
 if (items.length < 100) throw new Error(`live service advertised only ${items.length} resources — refusing to publish a page built from a partial read`);
@@ -122,6 +139,6 @@ ${[...band.entries()].map(([k, v]) => `    <tr><td>${esc(k)}</td><td>${v}</td></
 </body></html>
 `);
 console.log(`wrote ${OUT}/ index.html + x402-info.json + discovery.json`);
-console.log(`  measured from ${ORIGIN}: ${rows.length} priced resources, $${min}-$${max}, networks=${nets.length}, free=${free.join(",") || "none"}`);
+console.log(`  measured from ${READ_FROM}, advertised as ${ORIGIN}: ${rows.length} priced resources, $${min}-$${max}, networks=${nets.length}, free=${free.join(",") || "none"}`);
 console.log(`  bands: ${[...band.entries()].map(([k, v]) => `${k}=${v}`).join(" · ")}`);
 console.log("  deploy: npx wrangler pages deploy " + OUT + "   (log in with `npx wrangler login` yourself — the token stays in your own keyring)");

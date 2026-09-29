@@ -1,0 +1,8 @@
+name = "x402-audit"
+compatibility_date = "2026-09-30"
+
+# Static assets only: this Worker has no code, so it cannot reach a paid route.
+# Verified from the public URL: /market/*, /chain/*, /health and /.well-known/* all answer 404.
+[assets]
+directory = "./public"
+binding = "ASSETS"
