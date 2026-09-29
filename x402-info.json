@@ -1,6 +1,6 @@
 {
-  "name": "x402 Audit + Market Data",
-  "title": "crypto-bot-honesty-audit",
+  "name": "io.github.kaminariouji/x402-audit-agent",
+  "title": "x402 Audit + Market Data",
   "description": "Pay-per-call x402 service over MCP and plain HTTP. 146 priced resources on two networks. No account, no API key, no free tier beyond the two demo tools named below.",
   "currency": "USDC",
   "networks": [
@@ -43,7 +43,7 @@
   "settlement": "USDC. Payment is verified and settled by the x402 facilitator before any data is returned; a call without a valid payment gets HTTP 402 and a machine-readable challenge, never a partial answer.",
   "built_from": {
     "origin": "https://labored-safari-islamic.ngrok-free.dev",
-    "at": "2026-09-29T16:27:06.686Z",
+    "at": "2026-09-29T16:39:51.356Z",
     "documents": [
       "/.well-known/x402",
       "/discovery/resources",
