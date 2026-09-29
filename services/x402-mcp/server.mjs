@@ -4606,6 +4606,40 @@ app.use((req, res, next) => {
 // RFC 9727 service catalog: how a crawler finds /openapi.json without being told. x402scan publishes one
 // itself, so this mirrors their shape. The Link header goes on every response — including the 402 — so a
 // buyer that just got paywalled immediately learns where the machine-readable contract lives.
+// Gzip the published documents, for clients that ask. Not a cosmetic choice: the four discovery
+// documents are ~0,7 MB uncompressed (measured: /well-known/x402 286,872 B, /openapi.json 238,758 B,
+// /discovery/resources 122,406 B, /llms.txt 43,508 B), every crawler that grades us pulls them, and our
+// public edge is a FREE tunnel with a monthly byte budget — which ran out on 2026-09-30 (ERR_NGROK_725)
+// and took the whole paid surface down. These documents are ~11:1 compressible, so this is the one lever
+// that multiplies the tunnel's life without moving anything.
+// Scoped deliberately: document paths only, never a 402 challenge. A client that came to READ our terms
+// is a crawler with a decompressor; a client that came to PAY is an x402 SDK whose header handling we do
+// not control, and a payment that fails to parse is money on the table. Opt-in by Accept-Encoding, and
+// Vary is set so a shared cache never hands a gzipped body to a client that did not ask.
+import { gzipSync } from "node:zlib";
+const DOC_PATHS = /^\/(openapi\.json|llms\.txt|discovery\/resources|\.well-known\/(x402(\.json)?|x402-info(\.json)?|ai-catalog(\.json)?|ard\.json|mcp\/(server-card|card)\.json|agent-card\.json|agent\.json))$/;
+app.use((req, res, next) => {
+  const p = String(req.path || "");
+  if (!DOC_PATHS.test(p)) return next();
+  // Vary always, compressed or not: a shared cache must never hand a gzipped body to the next client
+  // that did not ask for one.
+  res.set("Vary", "Accept-Encoding");
+  if (!/\bgzip\b/.test(String(req.headers["accept-encoding"] || ""))) return next();
+  const asJson = res.json.bind(res), asSend = res.send.bind(res);
+  const pack = (body) => {
+    const buf = Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
+    const z = gzipSync(buf, { level: 6 });
+    // If compressing made it bigger (tiny bodies pay for their own header), fall back to the ORIGINAL
+    // writers captured above — not to the patched ones, which would recurse forever.
+    if (z.length >= buf.length) return typeof body === "string" ? asSend(body) : asJson(body);
+    if (!res.headersSent) res.set("Content-Encoding", "gzip").set("Content-Length", String(z.length));
+    return res.end(z);
+  };
+  res.json = pack;
+  res.send = pack;
+  next();
+});
+
 const API_CATALOG_LINK = '</.well-known/api-catalog>; rel="api-catalog", </openapi.json>; rel="service-desc"; type="application/vnd.oai.openapi+json"';
 app.use((_req, res, next) => { res.set("Link", API_CATALOG_LINK); next(); });
 
