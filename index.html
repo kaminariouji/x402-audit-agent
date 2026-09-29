@@ -1,24 +1,43 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>crypto-bot-honesty-audit — paid x402 agent</title>
-<meta name="description" content="Pay-per-call x402 agent: crypto-bot honesty audit (0.01 USDC) plus keyless market data — price, search, market caps, TVL, stablecoins, trending, gas (0.01 USDC). Payable in USDC on Base or Solana.">
-</head>
-<body style="font-family:system-ui,sans-serif;max-width:52rem;margin:2rem auto;padding:0 1rem;line-height:1.55">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>crypto-bot-honesty-audit — x402 pay-per-call agent</title>
+<meta name="description" content="146 priced crypto reads over x402 (MCP + HTTP), USDC on Base and Solana.">
+<style>
+ body{font:16px/1.6 system-ui,max-width:46rem;margin:3rem auto;padding:0 1.2rem;color:#111}
+ code,pre{background:#f5f5f5;border-radius:6px;padding:.15rem .4rem;font-size:.92em}
+ pre{padding:.8rem 1rem;overflow:auto}
+ h1{font-size:1.5rem;margin-bottom:.2rem} .sub{color:#555;margin-top:0}
+ table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid #ddd;padding:.45rem .3rem;text-align:left;font-size:.95rem}
+ .foot{color:#666;font-size:.85rem;margin-top:2.5rem;border-top:1px solid #eee;padding-top:1rem}
+</style></head><body>
 <h1>crypto-bot-honesty-audit</h1>
-<p>A self-revenue <strong>x402</strong> service: a paid HTTP API plus nine MCP tools, no signup and no API key. Two products:</p>
-<ol>
-<li><strong>Crypto-bot honesty audit</strong> (<code>POST /audit</code>, MCP <code>audit_bot_code</code>, 0.01 USDC) — scans a JS/TS crypto-bot source file for the bug patterns that make a bot report income it never earned: testnet tokens counted as USD, silent-zero balances from failed RPC, cooldown key mismatches, non-existent faucet endpoints, attempts counted as results.</li>
-<li><strong>Keyless market data</strong> (0.01 USDC per call) — <code>GET /price</code>, <code>/search_tokens</code>, <code>/markets</code>, <code>/tvl</code>, <code>/stablecoins</code>, <code>/trending</code>, <code>/gas</code>, with matching MCP tools <code>get_token_price</code>, <code>search_tokens</code>, <code>top_markets</code>, <code>chain_tvl</code>, <code>stablecoin_supply</code>, <code>trending_tokens</code>, <code>gas_prices</code>.</li>
-</ol>
-<p>Each unpaid call returns HTTP&nbsp;402 whose challenge offers <strong>both</strong> settlement networks — USDC on Base (<code>eip155:8453</code>) and USDC on Solana (<code>solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp</code>) — settling directly to the seller wallet with no human in the loop. On Solana the facilitator is the feePayer, so receiving costs the seller nothing.</p>
-<h2>Live endpoints</h2>
+<p class="sub">Pay-per-call over <code>x402</code>. No account, no API key, no usage limits — you pay USDC per call and the answer is the data.</p>
+<table>
+ <tr><th>Priced resources</th><td>146 (146 of them also callable as MCP tools)</td></tr>
+ <tr><th>Price</th><td>$0.001–$0.010 per call, USDC on Base or Solana</td></tr>
+ <tr><th>What sells here</th><td>1 source-code audit · 72 chain read · 69 market/venue read · 4 rail demand map</td></tr>
+ <tr><th>Free to try first</th><td><code>demo_audit</code>, <code>x402_rail_heartbeat</code></td></tr>
+ <tr><th>Networks</th><td><code>eip155:8453</code> <code>solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp</code></td></tr>
+ <tr><th>Payout address</th><td><code>0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b</code></td></tr>
+</table>
+<h2>Connect it</h2>
+<pre>npm i @protocolinsurer/x402-mcp-client
+X402_MCP_BASE_URL=https://labored-safari-islamic.ngrok-free.dev   # + the buyer's own wallet key, set by you, never by us</pre>
+<p>The client's <code>tools/list</code> shows all 146 paid tools with their prices, and it handles the 402 → sign → retry automatically. Plain HTTP works too: <code>GET https://labored-safari-islamic.ngrok-free.dev/market/&lt;resource&gt;</code>.</p>
+<h2>Authoritative documents (live origin)</h2>
 <ul>
-<li>Unpaid <code>POST /audit</code> returns HTTP 402 with x402 payment terms.</li>
-<li>Discovery: <code>/.well-known/x402-info</code>, <code>/llms.txt</code>, <code>/openapi.json</code> on the live host.</li>
-<li>Metadata mirror: <a href="./x402-info.json"><code>x402-info.json</code></a> (this page is the durable github.io mirror; compute + settlement run on the live host).</li>
-<li>Source: <a href="https://github.com/kaminariouji/x402-audit-agent">github.com/kaminariouji/x402-audit-agent</a></li>
-<li>Merchant listing: <a href="https://www.x402scan.com/server/6f86e2b0-87d0-4805-bfd9-7b69be3e1b1d">x402scan server page</a></li>
+  <li><code>mcp</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/mcp">https://labored-safari-islamic.ngrok-free.dev/mcp</a></li>
+  <li><code>http_data</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/market/<resource>">https://labored-safari-islamic.ngrok-free.dev/market/<resource></a></li>
+  <li><code>terms</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/.well-known/x402">https://labored-safari-islamic.ngrok-free.dev/.well-known/x402</a></li>
+  <li><code>resource_list</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/discovery/resources">https://labored-safari-islamic.ngrok-free.dev/discovery/resources</a></li>
+  <li><code>agent_card</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/.well-known/agent-card.json">https://labored-safari-islamic.ngrok-free.dev/.well-known/agent-card.json</a></li>
+  <li><code>openapi</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/openapi.json">https://labored-safari-islamic.ngrok-free.dev/openapi.json</a></li>
+  <li><code>briefing</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/llms.txt">https://labored-safari-islamic.ngrok-free.dev/llms.txt</a></li>
 </ul>
-<p><small>Recipient wallets — Base: <code>0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b</code>, Solana: <code>5NWSPyJChL2NJf3oEr6Mh4vLvG5S3qQmf5S4v7v8wEV4</code>.  Market-data calls are 0.001 USDC each. Prices sit inside the measured x402 market band (median cataloged call: 0.005 USDC). Machine-readable fan-out: <code>GET /discovery/resources</code>, <code>GET /robots.txt</code>. Facilitator: <code>facilitator.payai.network</code>. No signup, no API key — your x402 client pays the 402 and retries. <code>GET /mcp</code> answers 405 because the Streamable-HTTP transport is POST-only; <code>demo_audit</code> is free.</small></p>
+<p class="foot">Mirror generated <code>2026-09-29T16:27:06.686Z</code> from <code>https://labored-safari-islamic.ngrok-free.dev</code> by
+<code>scripts/build-build-pages-mirror.mjs</code>. This page exists because the tunnel in front of the live
+service shows its own HTML to browser-shaped user agents, so crawlers cannot read the same documents an
+x402 client can. Numbers here are read from the service, not copied by hand — if they disagree with
+<code>/.well-known/x402</code>, the service is right and this file is stale.</p>
 </body></html>
