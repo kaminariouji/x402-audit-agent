@@ -4,7 +4,14 @@
 // to 10000 and silently take over the origin ngrok publishes (that happened once — see project
 // memory). Dynamic import after the override makes the failure mode impossible.
 process.env.PORT ??= "10995";
-const { topMarkets, chainTvl, stablecoinSnapshot, trendingBoosted, gasPrices } = await import("./server.mjs");
+const { topMarkets, chainTvl, stablecoinSnapshot, trendingBoosted, gasPrices,
+  DATA_ROUTES, PAID_DATA_PATHS, PAYABLE_ROUTES, mcpToolName } = await import("./server.mjs");
+// Every surface count below is derived from the server's own route tables, so adding a priced route
+// cannot silently pass a stale hardcoded number (the old literals were 8/10, then 9 tools).
+// The seven hand-written GET routes plus POST /audit: everything paid that is NOT in DATA_ROUTES.
+// /mcp and /a2a are payable but deliberately not openapi-paid ops (see the comment at their checks).
+const LEGACY_PAID_OPS = ["GET /price", "GET /search_tokens", "GET /markets", "GET /tvl",
+  "GET /stablecoins", "GET /trending", "GET /gas", "POST /audit"];
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join} from "node:path";
 import { tmpdir } from "node:os";
@@ -123,7 +130,13 @@ check("GET /mcp -> 405 with Allow: POST", mcpGet.status === 405 && mcpGet.header
 const disc = await fetch(base + "/discovery/resources");
 const dj = await disc.json().catch(() => ({}));
 check("GET /discovery/resources -> 200 free", disc.status === 200, disc.status);
-check("fan-out lists every paid route", dj.items?.length === 10, `${dj.items?.length}`); // 8 data/audit + /a2a + /mcp
+// Not just a count: the item set must equal the server's own payable table, so a route that exists but
+// is missing from the fan-out (invisible to buyers) fails here instead of hiding behind a matching number.
+const discPaths = new Set((dj.items || []).map((i) => String(i.resource || "").replace(/^https?:\/\/[^/]+/, "")));
+const payablePaths = new Set(PAYABLE_ROUTES.map((r) => r.path));
+check("fan-out lists every paid route", dj.items?.length === PAYABLE_ROUTES.length
+  && [...payablePaths].every((p) => discPaths.has(p)) && [...discPaths].every((p) => payablePaths.has(p)),
+`${dj.items?.length} items vs ${PAYABLE_ROUTES.length} payable; missing=[${[...payablePaths].filter((p) => !discPaths.has(p)).join(" ")}] extra=[${[...discPaths].filter((p) => !payablePaths.has(p)).join(" ")}]`);
 check("fan-out resources are absolute URLs", dj.resources?.every((r) => /^https:\/\//.test(r)), JSON.stringify(dj.resources?.slice(0, 2)));
 check("fan-out items each offer both networks", dj.items?.every((i) => i.accepts?.length === 2), "some items are single-network");
 check("fan-out audit is priced, market data separately", dj.items?.find((i) => i.resource?.endsWith("/audit"))?.accepts?.[0]?.price === "$0.01", dj.items?.[0]?.accepts?.[0]?.price);
@@ -136,6 +149,16 @@ check("robots allows all + points at llms.txt", /Allow: \//.test(rt) && /\/llms\
 // and the service gets skipped, so every mismatch must declare the working method + price.
 for (const [path, method] of [["/price", "GET"], ["/markets", "GET"], ["/audit", "POST"], ["/mcp", "POST"]]) {
   for (const verb of [method === "GET" ? "POST" : "GET", "PATCH", "PUT", "DELETE", "HEAD"]) {
+    // `GET /audit` is the deliberate exception: it is an advertised payable resource now, so an unpaid GET
+    // answers 402 + challenge instead of 405. Graders we are measured by score that difference hugely
+    // (agentprobe: 402+header = 100, 405 = 20) and our /audit row sat at 20 for a week under the old
+    // behaviour. The 405 path still exists for a GET that CARRIES a payment, which can never settle.
+    if (path === "/audit" && verb === "GET") {
+      const r = await fetch(base + path, { method: "GET" });
+      check("GET /audit -> 402 with a challenge (advertised resource, not a dead verb)",
+        r.status === 402 && !!r.headers.get("payment-required"), `${r.status} payment-required=${!!r.headers.get("payment-required")}`);
+      continue;
+    }
     const r = await fetch(base + path, { method: verb, headers: { "content-type": "application/json" }, body: ["POST", "PATCH", "PUT", "DELETE"].includes(verb) ? "{}" : undefined });
     check(`${verb} ${path} -> 405 (never 404/400)`, r.status === 405, String(r.status));
   }
@@ -146,15 +169,37 @@ for (const [path, method] of [["/price", "GET"], ["/markets", "GET"], ["/audit",
 const mm = await (await fetch(base + "/price", { method: "PUT" })).json();
 check("405 body names working method + price", mm.paid_endpoint === "GET /price" && mm.paywall?.price === "$0.001", JSON.stringify(mm).slice(0, 160));
 
-// The /mcp gate keys off the PATH, not the JSON-RPC body, so one challenge prices every tool. It used
-// to read "run audit_bot_code on one source file" — wrong for 8 of the 9 paid tools, and it billed a
-// get_token_price buyer $0.01 for something GET /price sells at $0.001. The challenge must state the
-// real rule instead of advertising the audit case only.
-const mcpChallenge = await fetch(base + "/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-const mcpTerms = JSON.parse(Buffer.from(mcpChallenge.headers.get("payment-required") || "", "base64").toString());
-const mcpDesc = String(mcpTerms?.resource?.description ?? mcpTerms?.accepts?.[0]?.description ?? "");
-check("POST /mcp challenge describes every tool, not just audit", /tools\/call/.test(mcpDesc) && /market-data/.test(mcpDesc), mcpDesc.slice(0, 180));
-check("POST /mcp challenge quotes the cheaper HTTP data price", mcpDesc.includes("$0.001"), mcpDesc.slice(0, 180));
+// /mcp is one x402 resource carrying two price classes, so the assertion has to be about the AMOUNT,
+// not the prose. It used to bill every paid tools/call the $0.01 audit price — 10x what GET /price (and
+// every mirrored data route) sells the same bytes for, and contradicting each tool's own description.
+// The requirement is now resolved per request, so probe the challenge with the body that would be sent.
+const mcpTermsFor = async (bodyObj) => {
+  const r = await fetch(base + "/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bodyObj) });
+  const raw = r.headers.get("payment-required");
+  // A free answer carries no challenge header at all, so decode only what is there.
+  let t = {};
+  if (raw) { try { t = JSON.parse(Buffer.from(raw, "base64").toString()); } catch { t = {}; } }
+  return { status: r.status, amounts: [...new Set((t.accepts || []).map((a) => String(a.amount)))], desc: String(t?.resource?.description ?? "") };
+};
+const callOf = (name) => ({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } });
+const mcpDefault = await mcpTermsFor({});
+check("POST /mcp with no named tool challenges at the audit price", mcpDefault.status === 402 && mcpDefault.amounts.join() === "10000", JSON.stringify(mcpDefault));
+const mcpAudit = await mcpTermsFor(callOf("audit_bot_code"));
+check("tools/call audit_bot_code challenges at the audit price", mcpAudit.status === 402 && mcpAudit.amounts.join() === "10000", JSON.stringify(mcpAudit));
+{
+  // One mirrored tool from each band plus a pre-DATA_ROUTES legacy name: the split must cover every
+  // route table, not just the ones that happened to be listed first.
+  const sample = [mcpToolName(DATA_ROUTES[0].path), mcpToolName(DATA_ROUTES[DATA_ROUTES.length - 1].path), "top_markets", "get_token_price"];
+  const wrong = [];
+  for (const name of sample) {
+    const t = await mcpTermsFor(callOf(name));
+    if (t.status !== 402 || t.amounts.join() !== "1000") wrong.push(`${name}->${t.status}/${t.amounts.join()}`);
+  }
+  check(`every sampled mirrored tool challenges at 1000 atomic, not the audit price`, wrong.length === 0, wrong.join(" | "));
+}
+const mcpUnknown = await mcpTermsFor(callOf("no_such_tool"));
+check("an unknown tool name is never gated (nothing to pay for)", mcpUnknown.status !== 402, JSON.stringify(mcpUnknown).slice(0, 160));
+check("POST /mcp challenge states both price classes", /tools\/call/.test(mcpDefault.desc) && mcpDefault.desc.includes("$0.01") && mcpDefault.desc.includes("$0.001"), mcpDefault.desc.slice(0, 200));
 
 // The SDK's own extractor reads ONLY PAYMENT-SIGNATURE (chunk-UF6R7D6H extractPayment). We add a
 // deliberate, server-owned bridge for the legacy v1 X-PAYMENT envelope, because that is the header the
@@ -196,9 +241,15 @@ check("unpaid POST /audit still 402 after the bridge shipped", underpaid === 402
 // logged as "No 402 challenge". Registration is the last step before a buyer can find us, so assert it.
 const paidOps = Object.entries(oa.paths || {}).flatMap(([p, item]) =>
   Object.entries(item).filter(([, op]) => op?.["x-payment-info"]).map(([m, op]) => [`${m.toUpperCase()} ${p}`, op]));
-// 8 HTTP-paid ops. /mcp is declared free on purpose: its handshake answers 200 to an unpaid probe, so a
-// scanner that expects 402 there would fault the whole origin even though tools/call is metered.
-check("every paid route is declared in openapi", paidOps.length === 8, `${paidOps.length}: ${paidOps.map(([k]) => k).join(" ")}`);
+// 8 HTTP-paid data/audit ops plus the chain-state batch. /mcp is declared free on purpose: its
+// handshake answers 200 to an unpaid probe, so a scanner that expects 402 there would fault the whole
+// origin even though tools/call is metered.
+const declaredOps = new Set(paidOps.map(([k]) => k));
+const wantOps = new Set([...LEGACY_PAID_OPS, ...DATA_ROUTES.map((r) => `GET ${r.path}`)]);
+check("openapi declares exactly the paid op set — no route sold without a contract, none listed for free",
+  paidOps.length === wantOps.size && [...wantOps].every((k) => declaredOps.has(k))
+  && [...declaredOps].every((k) => wantOps.has(k)),
+`declared=${paidOps.length} want=${wantOps.size} missing=[${[...wantOps].filter((k) => !declaredOps.has(k)).join(" ")}] extra=[${[...declaredOps].filter((k) => !wantOps.has(k)).join(" ")}]`);
 check("protocols are x402 objects, not bare strings", paidOps.every(([, o]) => JSON.stringify(o["x-payment-info"].protocols) === '[{"x402":{}}]'),
   JSON.stringify(paidOps[0]?.[1]?.["x-payment-info"]?.protocols));
 check("prices are decimal USD at 6dp", paidOps.every(([, o]) => /^\d+\.\d{6}$/.test(String(o["x-payment-info"].price.amount))),
@@ -209,13 +260,23 @@ check("openapi decimal USD agrees with runtime atomic units", String(Math.round(
 check("every paid op has an output schema", paidOps.every(([, o]) => !!o.responses?.["200"]?.content?.["application/json"]?.schema),
   paidOps.filter(([, o]) => !o.responses?.["200"]?.content?.["application/json"]?.schema).map(([k]) => k).join(" "));
 check("every paid op declares responses.402", paidOps.every(([, o]) => !!o.responses?.["402"]), "missing 402 response");
-check("every paid op has input (body or params)", paidOps.every(([, o]) => !!o.requestBody || (o.parameters || []).length > 0),
-  paidOps.filter(([, o]) => !o.requestBody && !(o.parameters || []).length).map(([k]) => k).join(" "));
+// An op is input-less legitimately only when its own route table declares no arguments (the six
+// zero-argument reads: btc-chain-tip, cbex-clock…). A route that takes args and publishes no parameters
+// is the bug this check exists for — a scanner would probe it with nothing and read a 400.
+const argless = new Set(DATA_ROUTES.filter((r) => !r.args.length).map((r) => `GET ${r.path}`));
+const inputless = paidOps.filter(([, o]) => !o.requestBody && !(o.parameters || []).length).map(([k]) => k);
+check("every paid op has input, except the routes that truly take none", inputless.every((k) => argless.has(k)),
+  `input-less ops with declared args: ${inputless.filter((k) => !argless.has(k)).join(" ") || "(none)"}`);
+const argful = new Set(DATA_ROUTES.filter((r) => r.args.length).map((r) => `GET ${r.path}`));
+check("every route with arguments publishes them as openapi parameters",
+  paidOps.filter(([k]) => argful.has(k)).every(([, o]) => (o.parameters || []).length > 0),
+  paidOps.filter(([k, o]) => argful.has(k) && !(o.parameters || []).length).map(([k]) => k).join(" "));
 // Their other probe failure mode is a validation reject on the probe body; an example gives the scanner
-// input that would actually pass, so every paid op must carry one.
-const noExample = paidOps.filter(([, o]) => !(o.requestBody?.content?.["application/json"]?.example)
+// input that would actually pass, so every op that asks for input must carry one.
+const noExample = paidOps.filter(([k, o]) => ((o.parameters || []).length || o.requestBody)
+  && !(o.requestBody?.content?.["application/json"]?.example)
   && !(o.parameters || []).some((p) => p.example !== undefined)).map(([k]) => k);
-check("every paid op carries a usable probe example", noExample.length === 0, noExample.join(" "));
+check("every paid op that takes input carries a usable probe example", noExample.length === 0, noExample.join(" "));
 const freeOps = Object.entries(oa.paths || {}).flatMap(([p, item]) =>
   Object.entries(item).filter(([, op]) => Array.isArray(op?.security) && op.security.length === 0).map(([m]) => `${m.toUpperCase()} ${p}`));
 check("free endpoints are declared security:[] (scanner skips them)", freeOps.length >= 9, `${freeOps.length}: ${freeOps.join(" ")}`);
@@ -242,8 +303,18 @@ check("MCP initialize -> 200", ini.status === 200, String(ini.status));
 await mcpPost({ jsonrpc: "2.0", method: "notifications/initialized" }, ini.sid);
 const tl = await mcpPost({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, ini.sid);
 const tools = (JSON.parse((tl.text.match(/^data: (.*)$/m) || [, tl.text])[1]).result?.tools) || [];
-check("tools/list returns 9 tools", tools.length === 9, String(tools.length));
-check("every tool annotated readOnly + non-destructive", tools.length === 9 && tools.every((t) => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint === false), JSON.stringify(tools.map((t) => t.annotations?.readOnlyHint)));
+// The mirror is the surface: a route that is payable over HTTP but absent from tools/list is a sold
+// product no MCP client can buy, and a duplicate name makes tools/call ambiguous.
+const toolNames = tools.map((t) => t.name);
+const notMirrored = DATA_ROUTES.filter((r) => !toolNames.includes(mcpToolName(r.path))).map((r) => r.path);
+check("every priced data route is mirrored as an MCP tool", notMirrored.length === 0, notMirrored.join(" "));
+check("tools/list has no duplicate names", new Set(toolNames).size === toolNames.length,
+  toolNames.filter((n, i) => toolNames.indexOf(n) !== i).join(" "));
+check("tools/list covers the audit + legacy tools too", ["audit_bot_code", "demo_audit", "get_token_price", "search_tokens"]
+  .every((n) => toolNames.includes(n)), toolNames.slice(0, 6).join(","));
+check(`tools/list count is the mirror (${toolNames.length}) and every tool has an inputSchema`,
+  toolNames.length >= DATA_ROUTES.length + 4 && tools.every((t) => !!t.inputSchema), String(toolNames.length));
+check("every tool annotated readOnly + non-destructive", tools.every((t) => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint === false), JSON.stringify(tools.filter((t) => t.annotations?.readOnlyHint !== true || t.annotations?.destructiveHint !== false).map((t) => t.name)));
 check("no tool description contradicts the live price", !tools.some((t) => /0\.05 USDC|\(0\.01 USDC via x402\)/.test(t.description || "")), JSON.stringify(tools.filter((t) => /0\.05|0\.01 USDC via/.test(t.description || "")).map((t) => t.name)));
 check("every tool carries a human title", tools.every((t) => typeof t.title === "string" && t.title.length > 4), JSON.stringify(tools.filter((t) => !t.title).map((t) => t.name)));
 
@@ -265,10 +336,17 @@ check("the 402 challenge itself carries the catalog Link header", /rel="api-cata
 // payment.price/x402Details were null for every x402 entry in its index — an unpriced tool cannot be
 // auto-paid and cannot be filtered by maxPricePerCall.
 const wk = await (await fetch(base + "/.well-known/x402")).json();
-check("x402 fan-out keeps resources as absolute URL strings", Array.isArray(wk.resources) && wk.resources.length === 8
-  && wk.resources.every((u) => /^https?:\/\/[^/]+\/[a-z_]+$/.test(u)), JSON.stringify(wk.resources?.slice(0, 2)));
+// Compared as SETS of pathnames against the one payable table, not as `1 + PAID_DATA_PATHS.size`: that
+// formula under-counted by two the moment `/a2a` and `/mcp` became advertised payable resources, so every
+// growth of the surface printed a false defect. A set comparison names what is missing or extra.
+const wkPaths = new Set((wk.resources || []).map((u) => { try { return new URL(u).pathname; } catch { return `NOT-A-URL:${u}`; } }));
+check("x402 fan-out keeps resources as absolute URL strings", Array.isArray(wk.resources)
+  && wk.resources.length === PAYABLE_ROUTES.length
+  && wk.resources.every((u) => /^https?:\/\/[^/]+\/[a-z0-9_/-]+$/.test(u))
+  && [...payablePaths].every((p) => wkPaths.has(p)) && [...wkPaths].every((p) => payablePaths.has(p)),
+`${wk.resources?.length} resources vs ${PAYABLE_ROUTES.length} payable; missing=[${[...payablePaths].filter((p) => !wkPaths.has(p)).join(" ")}] extra=[${[...wkPaths].filter((p) => !payablePaths.has(p)).join(" ")}]`);
 check("x402 fan-out still proves ownership of the payout address", (wk.ownershipProofs || []).includes("0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b"), JSON.stringify(wk.ownershipProofs));
-check("x402 fan-out prices every payable route in atomic units", Array.isArray(wk.payments) && wk.payments.length === 10
+check("x402 fan-out prices every payable route in atomic units", Array.isArray(wk.payments) && wk.payments.length === PAYABLE_ROUTES.length
   && wk.payments.every((p) => /^\d+$/.test(String(p.priceAtomic)) && String(p.priceAtomic) === String(p.accepts?.[0]?.amount)),
   JSON.stringify((wk.payments || []).map((p) => `${p.method} ${p.url?.split("/").pop()}=${p.priceAtomic}`)));
 check("x402 fan-out names asset + payTo + network per offer", wk.payments?.every((p) => p.accepts?.every((a) =>

@@ -1863,13 +1863,24 @@ async function topMarkets(vs, limit) {
   } catch (e) {
     // CoinGecko rate-limits datacenter IPs; fall back so a paid call never fails on it.
     const j = await cachedJson(`pap:${vs}:${limit}`, `${UP.paprikaTickers}?quotes=${vs}&limit=${Math.min(limit * 3, 200)}`, { headers: { accept: "application/json" } });
-    return { source: "coingecko-fallback-coinpaprika", note: String(e?.message || e), rows: j
-      .filter((c) => Number(c.rank) > 0).sort((a, b) => a.rank - b.rank).slice(0, limit).map((c) => ({
-        rank: c.rank, id: c.id, symbol: c.symbol, name: c.name, price: c.quotes?.[vs]?.price ?? null,
-        marketCap: c.quotes?.[vs]?.market_cap ?? null, volume: c.quotes?.[vs]?.volume_24h ?? null,
-        circulating: c.circulating_supply, change1h: null, change24h: c.quotes?.[vs]?.percent_change_24h ?? null,
-        change7d: c.quotes?.[vs]?.percent_change_7d ?? null,
-      })) };
+    // Paprika keys its quote block UPPERCASE (`{"quotes":{"USD":{"price":83122.5…}}}`, measured) while our
+    // `vs` parameter arrives lowercase — `quotes.usd` from this fallback. That mismatch made EVERY row of
+    // this branch null: rank, id, symbol and name came back filled, and price / marketCap / volume were
+    // silently null, so a buyer paying for "top coins by market cap" got a hollow table sorted by a number
+    // that wasn't there. The selftest caught it (`markets btc price > 0 :: null`). Look the quote up by
+    // any case, and if the host still hands back nothing priced, refuse rather than sell the emptiness.
+    const quote = (c) => (c?.quotes && (c.quotes[vs] || c.quotes[String(vs).toUpperCase()] || Object.values(c.quotes)[0])) || null;
+    const rows = j.filter((c) => Number(c.rank) > 0).sort((a, b) => a.rank - b.rank).slice(0, limit).map((c) => {
+      const q = quote(c) || {};
+      return {
+        rank: c.rank, id: c.id, symbol: c.symbol, name: c.name, price: q.price ?? null,
+        marketCap: q.market_cap ?? null, volume: q.volume_24h ?? null,
+        circulating: c.circulating_supply ?? c.total_supply ?? null, change1h: null,
+        change24h: q.percent_change_24h ?? null, change7d: q.percent_change_7d ?? null,
+      };
+    });
+    if (!rows.some((r) => Number(r.price) > 0)) throw new HttpError(502, `coinpaprika returned ${rows.length} rows with no price for ${vs} — refused rather than served empty`);
+    return { source: "coingecko-fallback-coinpaprika", note: String(e?.message || e), rows };
   }
 }
 
