@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.kaminariouji/x402-audit-agent",
   "title": "Crypto Bot Audit + Market Data (x402 paid)",
-  "description": "x402 pay-per-call: bot-honesty audit 0.01 USDC, 8 market-data tools 0.001; USDC on Base or Solana",
-  "version": "1.2.0",
+  "description": "Pay-per-call x402 over MCP + HTTP, no account and no API key: 146 tools. Crypto-bot honesty audit 0.01 USDC; 143 market/chain reads 0.001 USDC each (token price, gas, mempool, funding, TVL, balances, proxy/honeypot checks, a composed token risk verdict, and our measured 30-day demand map of this rail). Settles in USDC on Base and Solana (eip155:8453 / solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp). Free before you pay: demo_audit, x402_rail_heartbeat.",
+  "version": "1.4.0",
   "remotes": [
     {
       "type": "streamable-http",

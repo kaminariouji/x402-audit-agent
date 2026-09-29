@@ -1,0 +1,11 @@
+# local secrets and machine state — must never be committed
+.env
+.env.*
+wallet/
+*.pem
+*_key
+*_secret
+credentials*
+node_modules/
+ngrok.yml
+.tmp-check/*.out
