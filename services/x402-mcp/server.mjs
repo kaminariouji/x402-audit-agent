@@ -1646,18 +1646,27 @@ const CHAIN_ROUTES = [
     }),
   cr("/chain/token-meta-at", "Token name, symbol, supply at a block", "The ERC-20 listing fields read at a past block tag or height, formatted with the decimals the contract itself reported — how a supply looked on a date, not how it looks now.",
     ["erc20", "history", "supply", "token", "chain"], [A.chain(), A.token(), A.block({ required: true, default: undefined, desc: "block number or tag to read the listing fields at" })],
-    [["token", "string"], ["blockTag", "string"], ["name", "string"], ["symbol", "string"], ["decimals", "integer"], ["totalSupplyRaw", "string"], ["totalSupply", "string"]],
+    [["token", "string"], ["blockTag", "string"], ["name", "string|null"], ["symbol", "string|null"], ["decimals", "integer|null"], ["totalSupplyRaw", "string|null"], ["totalSupply", "string|null"]],
     {token: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", blockTag: "0x3158089", name: "USD Coin", symbol: "USDC", decimals: 6, totalSupplyRaw: "4274312172737682", totalSupply: "4274312172.737682"},
     async ({ chain, token, block }) => {
       const [name, symbol, dec, supply] = await Promise.all([
         callOrNull(chain, token, calldata(SEL.name), block), callOrNull(chain, token, calldata(SEL.symbol), block),
         callOrNull(chain, token, calldata(SEL.decimals), block), callOrNull(chain, token, calldata(SEL.totalSupply), block),
       ]);
-      const dp = Number(toBig(dec) ?? 18n);
-      const s = toBig(supply);
+      // An `eth_call` against an address that has no code at that block does not revert — free nodes answer
+      // `0x`, i.e. RETURNED NOTHING. Reading that as a number gives `decimals: 0` and `totalSupply: 0`,
+      // which is a fabricated history: measured on Base, USDC at `earliest` returned 0x for all four calls
+      // and the route printed decimals 0 / supply null while name and symbol were correctly null. So an
+      // empty return is now "unreadable", and only a real 32-byte word (even an all-zero one) is a value.
+      const word = (h) => (typeof h === "string" && /^0x[0-9a-fA-F]{64}$/.test(h) ? h : null);
+      const dp = word(dec) === null ? null : Number(toBig(dec));
+      const scaleKnown = dp !== null && Number.isFinite(dp) && dp <= 18;
+      const s = word(supply) === null ? null : toBig(supply);
+      // name/symbol are ABI strings, not single words, so they go through the decoder untouched (it
+      // already answers null for `0x` and for garbage).
       return { token, blockTag: block, name: decodeString(name), symbol: decodeString(symbol),
-        decimals: Number.isFinite(dp) && dp <= 18 ? dp : null,
-        totalSupplyRaw: s === null ? null : String(s), totalSupply: s === null ? null : fmtDec(s, Number.isFinite(dp) ? dp : 18) };
+        decimals: scaleKnown ? dp : null,
+        totalSupplyRaw: s === null ? null : String(s), totalSupply: s === null || !scaleKnown ? null : fmtDec(s, dp) };
     }),
   cr("/chain/nft-owner-at", "Who owned an NFT at a block", "ownerOf(id) read at a chosen block and again at the head: previous holder, current holder, and whether it moved — the ownership history a sale-attribution or stolen-collection check needs.",
     ["nft", "owner", "history", "erc721", "chain"], [A.chain(), A.token(), A.tokenId(), A.block({ required: true, default: undefined, desc: "older block number or tag to compare the current owner against" })],
