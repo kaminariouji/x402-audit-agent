@@ -4625,6 +4625,20 @@ app.get("/mcp", (_req, res) => res.status(405).set("Allow", "POST").json({
 // Agent Souk publisher verification (trust tier 2): proves this host belongs to our agent id.
 const SOUK_AGENT_ID = process.env.AGENTSOUK_AGENT_ID || "";
 app.get("/.well-known/agentsouk.txt", (_req, res) => res.type("text/plain").send(SOUK_AGENT_ID ? `agentsouk=${SOUK_AGENT_ID}\n` : "not configured\n"));
+// agent-tools.cloud ownership proof — the row for this host already existed, and resubmitting cannot edit
+// it ("already_listed … verify domain ownership to edit"), which is how it has kept advertising `price_max
+// 0.05` and `resource_count 11` against a service that charges $0.001-$0.01 across 146 resources. Their
+// claim API asked for `wellknown_file`: the token must be the WHOLE body of this exact path — no newline,
+// no wrapper — or verification fails, so send it verbatim rather than pretty.
+// The token is public by design (publishing it on the host IS the proof), but it still comes from the
+// environment rather than the source: it is per-claim, it can be reissued, and this file is published on
+// GitHub. Missing env answers 404, which is an honest "not configured", never an empty 200 that would look
+// like a verification page to their crawler.
+const ATC_VERIFY_TOKEN = process.env.AGENT_TOOLS_VERIFY_TOKEN || "";
+app.get("/.well-known/agent-tools-verify.txt", (_req, res) => {
+  if (!ATC_VERIFY_TOKEN) return res.status(404).type("text/plain").send("not configured\n");
+  res.set("cache-control", "no-store").type("text/plain").send(ATC_VERIFY_TOKEN);
+});
 // x402scan / Bazaar fan-out compat: list payable resources at their absolute URLs.
 // Routers (Glimind) publish a pricingUrl that points HERE, and their buyer record only carries an exact
 // price once the document states one: `price`/`pricePerCallUsd` were null and `x402Details` absent for
