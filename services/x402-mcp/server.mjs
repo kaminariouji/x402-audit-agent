@@ -84,6 +84,17 @@ const PAYMENT_INFO = {
 
 const FREE_METHODS = new Set(["initialize", "notifications/initialized", "ping", "tools/list", "resources/list", "prompts/list"]);
 const FREE_TOOLS = new Set(["demo_audit", "x402_rail_heartbeat"]);
+// The free tier in prose, built from the Set that actually decides it. The sentence used to read "demo_audit
+// plus the handshake" — a hand-typed claim about what costs nothing, which is the same mistake class as the
+// time a regex over tool descriptions labelled the PAID `chain_logs` tool as free in a published document.
+const FREE_TOOL_NAMES = [...FREE_TOOLS].sort().join(", ");
+// Where a crawler can still read our terms when the tunnel cannot be read: browser-shaped User-Agents get
+// ngrok's own HTML at HTTP 200 on every path, and once a month the free tunnel answers ERR_NGROK_725 on all
+// of them. The mirror is static assets on Cloudflare Workers, regenerated from this service and never
+// hand-edited. Unset the env and the sentence disappears — a deployment without a mirror must not advertise
+// one, because "see also this other copy of the truth" that does not resolve is worse than silence.
+const STATIC_MIRROR = String(process.env.X402_STATIC_MIRROR || "").replace(/\/+$/, "");
+const MIRROR_CLAUSE = STATIC_MIRROR ? ` A static, uncapped copy of these terms lives at ${STATIC_MIRROR}; it is regenerated from this service and the tunnel remains the only place any computation runs.` : "";
 // Every GET route below the gate costs PRICE_DATA per call. The chain-state and venue reads are
 // appended from DATA_ROUTES further down, so a new route cannot be added to the surface without
 // being paid — the same table also feeds the challenge, the discovery documents and the MCP tools.
@@ -3958,7 +3969,7 @@ const ROUTE_NAME_RE = /^\/(chain|market)\/[a-z0-9-]+$/;
 
 
 const mcp = new McpServer({ name: "crypto-bot-honesty-audit", version: "1.0.0" }, {
-    instructions: `Pay-per-call x402 agent, no account and no API key. ${DATA_ROUTES.length} atomic read routes at ${PRICE_DATA} USDC each — ${CHAIN_ROUTES.length} chain-state primitives over public RPC (${CHAIN_KEYS.join(", ")}), ${MARKET_ROUTES.length - 4} venue reads (Kraken, Coinbase Exchange, OKX, Bitfinex, Gate, KuCoin, Deribit, Hyperliquid, DeFiLlama, mempool.space and blockchain.info for Bitcoin, alternative.me sentiment, Polymarket, DexScreener, Jupiter and the Blockscout explorers) and 4 /market/x402-* rail-intelligence reads carrying our own measured 30-day demand map of this rail (calls and unique payers per listed host, from the keyless public discovery index) — plus POST /audit for a crypto-bot honesty scan at ${PRICE}. Every route is reachable over MCP under its own tool name and over plain HTTP GET; both answer byte-identically. Each mirrored tool advertises an outputSchema and returns the same object as structuredContent, so a client can decode the reply without parsing a text blob.`,
+    instructions: `Pay-per-call x402 agent, no account and no API key. ${DATA_ROUTES.length} atomic read routes at ${PRICE_DATA} USDC each — ${CHAIN_ROUTES.length} chain-state primitives over public RPC (${CHAIN_KEYS.join(", ")}), ${MARKET_ROUTES.length - 4} venue reads (Kraken, Coinbase Exchange, OKX, Bitfinex, Gate, KuCoin, Deribit, Hyperliquid, DeFiLlama, mempool.space and blockchain.info for Bitcoin, alternative.me sentiment, Polymarket, DexScreener, Jupiter and the Blockscout explorers) and 4 /market/x402-* rail-intelligence reads carrying our own measured 30-day demand map of this rail (calls and unique payers per listed host, from the keyless public discovery index) — plus POST /audit for a crypto-bot honesty scan at ${PRICE}. Every route is reachable over MCP under its own tool name and over plain HTTP GET; both answer byte-identically. Each mirrored tool advertises an outputSchema and returns the same object as structuredContent, so a client can decode the reply without parsing a text blob.${MIRROR_CLAUSE}`,
 });
 // Every tool is a read-only query or a static analysis. Declaring that is what lets an autonomous
 // client skip its destructive-action confirmation step before it pays us.
@@ -4652,7 +4663,7 @@ app.get("/health", (_req, res) => res.json({ ok: true, kind: "mcp+http",
   ...PAYMENT_INFO }));
 app.get("/", (_req, res) => res.json({
   name: "crypto-bot-honesty-audit",
-  endpoints: { paid: [`POST /audit (crypto-bot honesty scan, ${PRICE})`, "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "GET /markets?vs=usd&limit=25 (top coins by market cap)", "GET /tvl?limit=25 (chain TVL ranking)", "GET /stablecoins?limit=20 (pegged supply)", "GET /trending?limit=10 (promoted DEX tokens with quotes)", "GET /gas?chains=base,arbitrum (live gwei)", ...DATA_ROUTES.map((r) => `GET ${r.path}?${argHint(r)} (${r.title}, ${PRICE_DATA})`), `POST /mcp (${PAID_MCP_TOOL_COUNT} tools, metered per tools/call)`], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/api-catalog", "/.well-known/x402", "/.well-known/x402-info", "MCP demo_audit + x402_rail_heartbeat"] },
+  endpoints: { paid: [`POST /audit (crypto-bot honesty scan, ${PRICE})`, "GET /price?address=0x.. (token spot price)", "GET /search_tokens?q=.. (token search)", "GET /markets?vs=usd&limit=25 (top coins by market cap)", "GET /tvl?limit=25 (chain TVL ranking)", "GET /stablecoins?limit=20 (pegged supply)", "GET /trending?limit=10 (promoted DEX tokens with quotes)", "GET /gas?chains=base,arbitrum (live gwei)", ...DATA_ROUTES.map((r) => `GET ${r.path}?${argHint(r)} (${r.title}, ${PRICE_DATA})`), `POST /mcp (${PAID_MCP_TOOL_COUNT} tools, metered per tools/call)`], free: ["GET /", "/health", "/llms.txt", "/openapi.json", "/.well-known/api-catalog", "/.well-known/x402", "/.well-known/x402-info", `MCP ${FREE_TOOL_NAMES}`] },
   ...PAYMENT_INFO,
 }));
 // This route is registered in the FREE block, i.e. before the payment gate, so it must not swallow the
@@ -4789,7 +4800,7 @@ app.get(["/.well-known/x402", "/.well-known/x402.json"], (_req, res) => {
       resourceIndex: `${PUBLIC_URL}/.well-known/x402`, perCall: true },
     networks: OFFERED_NETS,
     pricing: { model: "per_call", currency: "USDC", minUsd: PRICE_DATA.replace("$", ""), maxUsd: PRICE.replace("$", "") },
-    instructions: `Pay-per-call x402 USDC on Base or Solana, no account and no API key. ${DATA_ROUTES.length} priced GET routes, each one atomic read at ${PRICE_DATA}: /chain/* reads chain state from a public node on ${CHAIN_KEYS.join(", ")} (?chain= plus the identifier); /market/* reads a named public venue — tickers, order books, candles, funding, order blocks, TVL and fee history, Bitcoin fees/mempool/hashrate, fear-and-greed, Polymarket markets, DexScreener pairs, Jupiter tokens, Blockscout explorer records. Legacy routes /price, /search_tokens, /markets, /tvl, /stablecoins, /trending, /gas cost the same. POST /audit (${PRICE}) scans a JS/TS crypto-bot file. Full parameter list per route: /openapi.json and the PAYMENT-REQUIRED challenge. MCP: ${PAID_MCP_TOOL_COUNT} paid tools on POST /mcp, mirrors of the same routes (${FREE_MCP_TOOL_COUNT} free: demo_audit plus the handshake).`,
+    instructions: `Pay-per-call x402 USDC on Base or Solana, no account and no API key. ${DATA_ROUTES.length} priced GET routes, each one atomic read at ${PRICE_DATA}: /chain/* reads chain state from a public node on ${CHAIN_KEYS.join(", ")} (?chain= plus the identifier); /market/* reads a named public venue — tickers, order books, candles, funding, order blocks, TVL and fee history, Bitcoin fees/mempool/hashrate, fear-and-greed, Polymarket markets, DexScreener pairs, Jupiter tokens, Blockscout explorer records. Legacy routes /price, /search_tokens, /markets, /tvl, /stablecoins, /trending, /gas cost the same. POST /audit (${PRICE}) scans a JS/TS crypto-bot file. Full parameter list per route: /openapi.json and the PAYMENT-REQUIRED challenge. MCP: ${PAID_MCP_TOOL_COUNT} paid tools on POST /mcp, mirrors of the same routes (${FREE_MCP_TOOL_COUNT} free: ${FREE_TOOL_NAMES}).${MIRROR_CLAUSE}`,
   });
 });
 // Catalogers (BrickBlueBot, payai-style spiders) GET this exact path for the machine-readable
@@ -5016,7 +5027,7 @@ app.get("/.well-known/x402-info", (_req, res) => res.json({
     { path: "/gas", method: "GET", price: PRICE_DATA, note: "live gwei for base,arbitrum by ?chains=" },
     ...DATA_ROUTES.map((r) => ({ path: r.path, method: "GET", price: PRICE_DATA, note: `${r.title} — ?${r.args.map((a) => a.name).join("&")}` })),
     { path: "/mcp", method: "POST", price: PRICE, note: `per tools/call: ${PRICE} for audit_bot_code, ${PRICE_DATA} for each data tool (same as its GET route)` },
-  ], freeEndpoints: ["/", "/health", "/llms.txt", "/robots.txt", "/discovery/resources", "/openapi.json", "/.well-known/api-catalog", "/.well-known/x402-info", "MCP demo_audit + x402_rail_heartbeat"] },
+  ], freeEndpoints: ["/", "/health", "/llms.txt", "/robots.txt", "/discovery/resources", "/openapi.json", "/.well-known/api-catalog", "/.well-known/x402-info", `MCP ${FREE_TOOL_NAMES}`] },
   capabilities: ["analyze", "audit", "classify", "market-data", "price", "search", "markets", "market-cap", "tvl", "defi", "stablecoins", "trending", "gas", "fees", "transaction-cost", "chain-state", "balance", "nonce", "block", "transaction-lookup", "receipt", "event-logs", "contract-read", "token-balance", "nft-ownership", "multi-chain"],
   payTo: { [NETWORK]: PAY_TO, [SOLANA_NETWORK]: PAY_TO_SOLANA },
 }));

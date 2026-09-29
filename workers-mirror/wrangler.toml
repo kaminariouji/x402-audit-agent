@@ -3,6 +3,8 @@ compatibility_date = "2026-09-30"
 
 # Static assets only: this Worker has no code, so it cannot reach a paid route.
 # Verified from the public URL: /market/*, /chain/*, /health and /.well-known/* all answer 404.
+# No `binding` here on purpose — wrangler rejects an asset binding in an assets-only Worker
+# ("Cannot use assets with a binding in an assets-only Worker"), and a binding without a script is
+# exactly the kind of half-config that would tempt someone to add the missing script later.
 [assets]
 directory = "./public"
-binding = "ASSETS"
