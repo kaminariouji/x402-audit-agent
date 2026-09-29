@@ -1,43 +1,46 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>x402 Audit + Market Data — x402 pay-per-call agent</title>
-<meta name="description" content="146 priced crypto reads over x402 (MCP + HTTP), USDC on Base and Solana.">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>x402 Audit + Market Data — x402 pay-per-call agent (146 priced resources)</title>
+<meta name="description" content="146 x402-priced crypto reads at $0.001-$0.01 per call in USDC on Base and Solana, plus a crypto-bot honesty audit. MCP + HTTP, no account, no API key.">
+<link rel="alternate" type="application/json" title="x402 terms" href="https://labored-safari-islamic.ngrok-free.dev/.well-known/x402">
+<link rel="alternate" type="application/json" title="resource list" href="https://labored-safari-islamic.ngrok-free.dev/discovery/resources">
+<link rel="canonical" href="https://x402-audit.pages.dev/">
 <style>
- body{font:16px/1.6 system-ui,max-width:46rem;margin:3rem auto;padding:0 1.2rem;color:#111}
- code,pre{background:#f5f5f5;border-radius:6px;padding:.15rem .4rem;font-size:.92em}
- pre{padding:.8rem 1rem;overflow:auto}
- h1{font-size:1.5rem;margin-bottom:.2rem} .sub{color:#555;margin-top:0}
- table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid #ddd;padding:.45rem .3rem;text-align:left;font-size:.95rem}
- .foot{color:#666;font-size:.85rem;margin-top:2.5rem;border-top:1px solid #eee;padding-top:1rem}
+ body{font:16px/1.65 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:48rem;margin:3rem auto;padding:0 1.2rem;color:#111;background:#fff}
+ h1{font-size:1.45rem;margin:0 0 .2rem} h2{font-size:1.05rem;margin-top:2rem} p.lede{color:#444;margin-top:0}
+ code{background:#f4f4f5;padding:.1rem .35rem;border-radius:5px;font-size:.9em}
+ table{border-collapse:collapse;width:100%;font-size:.93rem} td,th{border-bottom:1px solid #e5e7eb;padding:.4rem .3rem;text-align:left;vertical-align:top}
+ ul{padding-left:1.1rem} a{color:#1d4ed8} .foot{color:#666;font-size:.82rem;margin-top:2.5rem;border-top:1px solid #eee;padding-top:1rem}
+ .now{background:#fef9c3;border:1px solid #fde68a;border-radius:8px;padding:.6rem .8rem;font-size:.9rem}
 </style></head><body>
-<h1>crypto-bot-honesty-audit</h1>
-<p class="sub">Pay-per-call over <code>x402</code>. No account, no API key, no usage limits — you pay USDC per call and the answer is the data.</p>
+<h1>x402 Audit + Market Data</h1>
+<p class="lede">146 crypto reads you pay for one at a time, over x402. No account, no API key, no free tier beyond the two tools named below. This page is static on purpose: the live service sits behind a tunnel that either shows browser-shaped User-Agents an interstitial or, once a month, runs out of bandwidth — and a crawler should never have to depend on that.</p>
+<div class="now"><strong>Where the compute actually is.</strong> Paid calls run at <code>https://labored-safari-islamic.ngrok-free.dev</code>. If that answers 403 with <code>ERR_NGROK_725</code>, the tunnel is out of monthly bandwidth and the service is alive but unreachable; nothing in this table changes because of it.</div>
+<h2>What it costs</h2>
 <table>
- <tr><th>Priced resources</th><td>146 (146 of them also callable as MCP tools)</td></tr>
- <tr><th>Price</th><td>$0.001–$0.010 per call, USDC on Base or Solana</td></tr>
- <tr><th>What sells here</th><td>1 source-code audit · 72 chain read · 69 market/venue read · 4 rail demand map</td></tr>
- <tr><th>Free to try first</th><td><code>demo_audit</code>, <code>x402_rail_heartbeat</code></td></tr>
- <tr><th>Networks</th><td><code>eip155:8453</code> <code>solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp</code></td></tr>
- <tr><th>Payout address</th><td><code>0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b</code></td></tr>
+    <tr><td>Protocol</td><td><code>x402 (HTTP 402 + PAYMENT-REQUIRED header; v1 and v2 both accepted)</code></td></tr>
+    <tr><td>Assets</td><td><code>USDC (ERC-20 on Base, SPL on Solana)</code></td></tr>
+    <tr><td>Price</td><td><code>$0.001–$0.01 per call, metered per resource</code></td></tr>
+    <tr><td>Priced resources</td><td><code>146 (also 146 MCP tools)</code></td></tr>
+    <tr><td>Free before paying</td><td><code><code>demo_audit</code>, <code>x402_rail_heartbeat</code></code></td></tr>
+    <tr><td>Payout (Base)</td><td><code>0x7C8A3c26bd579c5176A29a5a8Ae80536319Fa94b</code></td></tr>
+    <tr><td>Payout (Solana)</td><td><code>5NWSPyJChL2NJf3oEr6Mh4vLvG5S3qQmf5S4v7v8wEV4</code></td></tr>
 </table>
-<h2>Connect it</h2>
-<pre>npm i @protocolinsurer/x402-mcp-client
-X402_MCP_BASE_URL=https://labored-safari-islamic.ngrok-free.dev   # + the buyer's own wallet key, set by you, never by us</pre>
-<p>The client's <code>tools/list</code> shows all 146 paid tools with their prices, and it handles the 402 → sign → retry automatically. Plain HTTP works too: <code>GET https://labored-safari-islamic.ngrok-free.dev/market/&lt;resource&gt;</code>.</p>
-<h2>Authoritative documents (live origin)</h2>
+<h2>What's in the 146</h2>
+<table><tr><th>Band</th><th>Count</th></tr>
+    <tr><td>Legacy + audit</td><td>10</td></tr>
+    <tr><td>Chain state reads</td><td>63</td></tr>
+    <tr><td>Exchange / venue reads</td><td>69</td></tr>
+    <tr><td>Rail demand map</td><td>4</td></tr>
+</table>
+<h2>How a call is paid</h2>
+<p>Request the resource with no payment. The <code>402</code> body carries <code>accepts[]</code> — scheme, network, USDC contract, amount in atomic units, <code>payTo</code>, <code>maxTimeoutSeconds</code>. Sign it (EIP-3009 <code>TransferWithAuthorization</code> on Base, SPL token transfer on Solana) and retry with the payment header. v1 (<code>X-PAYMENT</code>) and v2 (<code>PAYMENT-SIGNATURE</code>) are both accepted, so a client that only speaks one still gets served.</p>
+<h2>Machine-readable</h2>
 <ul>
-  <li><code>mcp</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/mcp">https://labored-safari-islamic.ngrok-free.dev/mcp</a></li>
-  <li><code>http_data</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/market/<resource>">https://labored-safari-islamic.ngrok-free.dev/market/<resource></a></li>
-  <li><code>terms</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/.well-known/x402">https://labored-safari-islamic.ngrok-free.dev/.well-known/x402</a></li>
-  <li><code>resource_list</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/discovery/resources">https://labored-safari-islamic.ngrok-free.dev/discovery/resources</a></li>
-  <li><code>agent_card</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/.well-known/agent-card.json">https://labored-safari-islamic.ngrok-free.dev/.well-known/agent-card.json</a></li>
-  <li><code>openapi</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/openapi.json">https://labored-safari-islamic.ngrok-free.dev/openapi.json</a></li>
-  <li><code>briefing</code> — <a href="https://labored-safari-islamic.ngrok-free.dev/llms.txt">https://labored-safari-islamic.ngrok-free.dev/llms.txt</a></li>
+  <li>full terms: <a href="https://labored-safari-islamic.ngrok-free.dev/.well-known/x402"><code>https://labored-safari-islamic.ngrok-free.dev/.well-known/x402</code></a></li>
+  <li>resource list: <a href="https://labored-safari-islamic.ngrok-free.dev/discovery/resources"><code>https://labored-safari-islamic.ngrok-free.dev/discovery/resources</code></a> — and a static snapshot here: <a href="/discovery.json"><code>/discovery.json</code></a>, <a href="/x402-info.json"><code>/x402-info.json</code></a></li>
+  <li>MCP server card: <a href="https://labored-safari-islamic.ngrok-free.dev/.well-known/mcp/server-card.json"><code>https://labored-safari-islamic.ngrok-free.dev/.well-known/mcp/server-card.json</code></a> · agent card (A2A): <a href="https://labored-safari-islamic.ngrok-free.dev/.well-known/agent-card.json"><code>https://labored-safari-islamic.ngrok-free.dev/.well-known/agent-card.json</code></a></li>
+  <li>OpenAPI: <a href="https://labored-safari-islamic.ngrok-free.dev/openapi.json"><code>https://labored-safari-islamic.ngrok-free.dev/openapi.json</code></a> · agent briefing: <a href="https://labored-safari-islamic.ngrok-free.dev/llms.txt"><code>https://labored-safari-islamic.ngrok-free.dev/llms.txt</code></a></li>
 </ul>
-<p class="foot">Mirror generated <code>2026-09-29T16:39:51.356Z</code> from <code>https://labored-safari-islamic.ngrok-free.dev</code> by
-<code>scripts/build-build-pages-mirror.mjs</code>. This page exists because the tunnel in front of the live
-service shows its own HTML to browser-shaped user agents, so crawlers cannot read the same documents an
-x402 client can. Numbers here are read from the service, not copied by hand — if they disagree with
-<code>/.well-known/x402</code>, the service is right and this file is stale.</p>
+<p class="foot">Built 2026-09-29T19:43:37.731Z by <code>scripts/build-cloudflare-pages.mjs</code> from the running service at <code>https://labored-safari-islamic.ngrok-free.dev</code>. Every number above was read from <code>/.well-known/x402</code>, <code>/discovery/resources</code> and the MCP server card at build time; none of it is typed. If this page and the origin disagree, the origin is right and this page is stale.</p>
 </body></html>
