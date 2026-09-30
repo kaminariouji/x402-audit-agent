@@ -1,7 +1,7 @@
 {
  "service": "x402 Audit + Market Data",
  "version": 1,
- "built_at": "2026-09-29T19:43:37.731Z",
+ "built_at": "2026-09-30T20:34:31.162Z",
  "built_from": "https://labored-safari-islamic.ngrok-free.dev",
  "protocol": "x402 (HTTP 402 + PAYMENT-REQUIRED header; v1 and v2 both accepted)",
  "currency": "USDC",
