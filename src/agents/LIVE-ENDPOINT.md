@@ -160,6 +160,21 @@ container path otherwise, and the failure looks like a missing file rather than 
 monitors, not buyers, and no request has ever carried a payment header. Being reachable, payable and verified is
 not the same as being bought — the constraint this project has never cleared is a payer, not the code.
 
+**VERDICT on the pre-registered deadline (2026-10-06; stated as a failure, not a milestone).** The ledger holds
+**23 rows** spanning 2026-10-05T11:03Z → 18:04Z. Rows carrying *any* income signal (non-zero wallet, a
+settlement, a payment header, a CROO `delivered` with `payTxHash`): **0 of 23**. The wallet zeros are measured,
+not assumed: `control_croo_escrow_usdc > 1000` in **every one of the 23 rows**, so the read path that printed
+`0` also prints the escrow's thousands. Peak `requests_24h` = 3,262 with peak `with_payment_header` = **0**.
+
+The reach hypothesis also got falsified rather than confirmed: after the tunnel returned, `agent-tools.cloud`
+has **not re-probed us at all** — `health_checked` is frozen at 2026-10-04T21:53:38Z across every read, including
+20+ hours with the edge healthy. So "their crawler is defeated by ngrok" is NOT the explanation for our
+`degraded`/11-resource row; their probe schedule simply hasn't run. Do not repeat the old causal claim without
+re-reading `health_checked`.
+
+monitors, not buyers, and no request has ever carried a payment header. Being reachable, payable and verified is
+not the same as being bought — the constraint this project has never cleared is a payer, not the code.
+
 Ledger as of 2026-10-05T11:03Z (`node scripts/income-ledger.mjs`, appended to `src/agents/income-ledger.json`):
 `payto_base_usdc=0`, `payto_solana_usdc=0` across `0` token accounts, `settlements_24h=0`,
 `with_payment_header=0`, `server_errors_24h=0` — and this zero is a **measured** zero because the same read path
