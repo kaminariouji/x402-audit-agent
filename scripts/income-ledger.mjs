@@ -87,6 +87,24 @@ else {
   out.with_payment_header = parsed.filter((p) => p.pay !== "-" && p.pay !== "none").length;
 }
 
+// 3b. the CROO rail: a `delivered` row with a payTxHash is the only thing there that counts as income.
+const LEDGER_DIR = path.join(HERE, "..", "services", "croo-provider");
+for (const f of ["orders.jsonl"]) {
+  const p = path.join(LEDGER_DIR, f);
+  if (!existsSync(p)) { out.croo_ledger = "absent (no events have ever been written)"; continue; }
+  try {
+    const lines = readFileSync(p, "utf8").split("\n").filter(Boolean);
+    const types = new Map();
+    for (const l of lines) { let o; try { o = JSON.parse(l); } catch { continue; } types.set(o.type || "?", (types.get(o.type || "?") || 0) + 1); }
+    const delivered = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter((o) => o && o.type === "delivered" && o.payTxHash);
+    out.croo_rows = lines.length;
+    out.croo_types = Object.fromEntries([...types.entries()].sort((a, b) => b[1] - a[1]));
+    out.croo_delivered_with_txhash = delivered.length;
+    out.croo_delivered = delivered.slice(-3).map((d) => d.payTxHash);
+  } catch (e) { out.croo_ledger = `UNREADABLE ${String(e.message).slice(0, 60)}`; }
+}
+
 // 4. the gate is still a gate. Retried because the free edge resets a request burst — a transport reset
 //    is not a gate failure, and reporting one as one would put a false outage in the ledger.
 const gateProbe = async () => {
