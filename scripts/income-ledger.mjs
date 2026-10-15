@@ -30,10 +30,18 @@ const json = async (url, body) => {
 const hexNum = (h) => (h == null ? null : Number(BigInt(h)));
 const usdc = (raw) => (raw == null ? null : Number(BigInt(raw)) / 1e6);
 
-// A zero is only a zero if the same read path returns non-zero for an address we KNOW has money.
 async function usdcBase(addr) {
   const data = "0x70a08231" + addr.replace(/^0x/, "").padStart(64, "0");
   return usdc(hexNum(await json(BASE_RPC, { jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: USDC, data }, "latest"] })));
+}
+// A zero is only a zero if the same read path returns non-zero for something that CANNOT be drained by a
+// third party. The CROO escrow was used as this control for weeks and it worked, then on 2026-10-15 it read
+// 2.7 USDC instead of 1,409.75 — the vault was emptied by its owner, not by a broken read. A control whose
+// expected magnitude depends on somebody else's treasury is a control that expires silently, so the gate now
+// rides on USDC.totalSupply() and the escrow is reported as a fact about that rail instead.
+async function usdcTotalSupply() {
+  const r = await json(BASE_RPC, { jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: USDC, data: "0x18160ddd" }, "latest"] });
+  return r == null ? null : Number(BigInt(r)) / 1e6;
 }
 
 const dockerLogs = () => {
@@ -43,10 +51,15 @@ const dockerLogs = () => {
 
 const out = { asof: new Date().toISOString(), origin: ORIGIN };
 
-// 1. does the same RPC read path work at all?
+// 1. does the same RPC read path work at all? The gate on printing a zero rides on USDC.totalSupply(), which
+//    no third party can drain; the CROO escrow is still read, but as a fact about that rail, not as the proof
+//    that our reader works (it fell from 1,409.75 to 2.7 USDC when its owner emptied it, which would have
+//    silently disqualified every honest zero we had printed).
+const supply = await usdcTotalSupply();
 const control = await usdcBase(CROO_ESCROW);
-out.control_croo_escrow_usdc = control;
-out.read_path = control != null ? "OK" : "READ_FAILED — every zero below is UNKNOWN, not a zero";
+out.control_usdc_totalsupply = supply;
+out.croo_escrow_usdc_observed = control;
+out.read_path = (supply != null && supply > 1_000_000_000) ? "OK" : `FAILED — totalSupply read ${supply}; every zero below is UNKNOWN, not a zero`;
 
 // 2. our own payout address, both rails
 out.payto_base_usdc = await usdcBase(PAY_TO);
@@ -105,18 +118,27 @@ for (const f of ["orders.jsonl"]) {
   } catch (e) { out.croo_ledger = `UNREADABLE ${String(e.message).slice(0, 60)}`; }
 }
 
-// 4. the gate is still a gate. Retried because the free edge resets a request burst — a transport reset
-//    is not a gate failure, and reporting one as one would put a false outage in the ledger.
-const gateProbe = async () => {
+// 4. two different questions, two probes, because conflating them produced a false clean and a false alarm
+//    in the same week. (a) Does the GATE charge for data? That is answered by the deployed container on
+//    loopback — same build, zero bytes of the metered tunnel. (b) Is the rail REACHABLE by a buyer? That is
+//    the public edge, and a 403 there is ngrok's cap, not our gate letting data out free.
+const LOCAL_GATE = process.env.LOCAL_GATE || "http://127.0.0.1:10000";
+const edgeBytes = { requests: 0, bytes: 0 };
+const gateProbe = async (base, label) => {
   for (let i = 0; i < 3; i++) {
     try {
-      const r = await fetch(`${ORIGIN}/gas`, { headers: { accept: "application/json", "ngrok-skip-browser-warning": "1" }, signal: AbortSignal.timeout(20000) });
-      await r.body.cancel().catch(() => {});
-      return r.status;
+      const r = await fetch(`${base}/gas`, { headers: { accept: "application/json", "ngrok-skip-browser-warning": "1" }, signal: AbortSignal.timeout(20000) });
+      const t = await r.text();
+      if (base === ORIGIN) { edgeBytes.requests++; edgeBytes.bytes += Buffer.byteLength(t); }
+      const isNgrokPage = r.headers.get("ngrok-error-code") || (/ERR_NGROK_\d+|bandwidth limit for the month/i.test(t) && !/"x402Version"/.test(t));
+      if (isNgrokPage) return `${r.status} EDGE_DARK (${(t.match(/ERR_NGROK_\d+/) || ["interstitial"])[0]})`;
+      return r.status === 402 ? "402 gate" : `${r.status} ${r.status === 200 ? "LEAK — paid route answered free" : "NOT A CHALLENGE"}`;
     } catch (e) { if (i === 2) return `FETCH_FAILED ${String(e.message).slice(0, 50)}`; await new Promise((r) => setTimeout(r, 1500)); }
   }
 };
-out.gate_gas = await gateProbe();
+out.gate_local = await gateProbe(LOCAL_GATE, "local");
+out.edge_public = await gateProbe(ORIGIN, "public");
+out.edge_bytes_this_run = edgeBytes.bytes;
 
 // 5. reach: the two external grades that decide whether a buyer can find us at all.
 try {
