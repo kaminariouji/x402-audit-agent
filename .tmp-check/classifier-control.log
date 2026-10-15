@@ -1,0 +1,10 @@
+[2026-10-15T00:00:00.000Z] 200 GET /price ua=probe pay=-
+[2026-10-15T00:00:01.000Z] 502 GET /markets ua=probe pay=-
+[venue] api.kraken.com marked unreadable for 300s — its routes refuse the challenge unpaid (HTTP 500 upstream)
+[2026-10-15T00:00:02.000Z] 503 GET /btc/fees ua=probe pay=- upstream_unavailable charged:false
+[2026-10-15T00:00:03.000Z] 200 GET /health ua=curl pay=-
+[2026-10-15T00:00:04.000Z] 200 POST /mcp ua=probe pay=- rpc=tools/call tool=get_token_price
+[2026-10-15T00:00:05.000Z] 200 POST /mcp ua=probe pay=- rpc=tools/call tool=no_such_tool_xyz
+[2026-10-15T00:00:06.000Z] 402 GET /gas ua=probe pay=-
+[2026-10-15T00:00:07.000Z] 200 OPTIONS /price ua=probe pay=-
+[2026-10-15T00:00:08.000Z] 200 GET /chain/heads ua=probe pay=-
