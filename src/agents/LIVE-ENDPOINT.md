@@ -93,6 +93,22 @@ while fetching nothing):
    `/market/btc-chain-tip` answer at all — `mempool.space` aborted, `mempool.emzy.de` answered
    `429 rate_limited` on both tip paths, `blockstream.info` (Electrs, path-gated to `/blocks/tip/*` because
    `/v1/fees/recommended` is a 404 there) served height 969029 and the tip hash.
+7. **our own instruments are the biggest consumer of the metered tunnel, and they now default to loopback.**
+   Measured 2026-10-15: the variant battery alone is 2,511 requests / 2,973,425 bytes, a full verification pass
+   is 5.78 MB, and the 30-minute rail-watch pulled ~345 KB per run (`/discovery/resources` 122,406 B +
+   `POST /mcp tools/list` 216,994 B) ≈ 0.5 GB/month of self-inflicted traffic on the plan whose monthly byte
+   cap has taken the rail dark twice. `scripts/probe-target.mjs` now encodes the rule — **invariant checks hit
+   `127.0.0.1:10000`** (same deployed build: a local `GET /gas` returns the identical 1,841-byte 402 advertising
+   the PUBLIC origin and the real `payTo`), while only edge-liveness reads (`/health`, one `/chain/heads`) stay
+   public. One sensor run now costs **5,074 bytes** instead of ~345 KB. The instruments also print their own
+   byte cost, so "this drill is cheap" is a number.
+   The same audit found and fixed a classifier defect: the 5xx and 2xx-leak filters matched a status-shaped
+   token ANYWHERE in a line, so a `[venue] … (HTTP 500 upstream)` notice counted as a served error — one run
+   reported `server_errors=5` while the ledger's anchored count of the same log said 0. Both are now anchored
+   to the app's request-line shape via `responseStatus()`, and every run asserts a planted fixture
+   (`.tmp-check/classifier-control.log`: prose-500 ignored, served-502 counted, 503-refusal not an error,
+   `/health` 200 not a leak, unadvertised tool name not a leak).
+
 Residual, known gap: a vendor that fails *between* checks still settles first (tracked in the project tasks).
 
 ## Published discovery surface (all free, all generated from the same route table)
@@ -154,6 +170,14 @@ Deployed bytes when this section was written: `services/x402-mcp/server.mjs` md5
 `b609f42dfe142f561cf58534a92f65bf`, identical inside the `x402-audit` container at `/app/server.mjs`
 (read with `MSYS_NO_PATHCONV=1 docker exec x402-audit md5sum /app/server.mjs` — Git Bash rewrites the
 container path otherwise, and the failure looks like a missing file rather than a mangled one).
+
+**Positive control changed 2026-10-15.** For weeks `income-ledger.mjs` proved "this zero is real" by reading the
+CROO escrow in the same call and requiring thousands of USDC. On 2026-10-15 that escrow read **2.7 USDC** (was
+1,409.75 on 2026-10-05) — confirmed against two independent RPCs — because its owner drained it. The rail was
+still reading correctly, but a control whose expected size belongs to somebody else expires in silence, so the
+gate now rides on `USDC.totalSupply()` (measured 4,391,797,075 USDC) and the escrow balance is reported as a
+fact about CROO rather than as proof. Same lesson as the classifier above: a check must be anchored to something
+we do not depend on the world to keep.
 
 ## Honest status of this project
 **It has earned $0.** Settlements into the payout wallet: zero. Traffic is real but it is crawlers and liveness
